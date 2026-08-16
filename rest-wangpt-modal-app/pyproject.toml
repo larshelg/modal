@@ -1,0 +1,19 @@
+[project]
+name = "rest-wangpt-modal-app"
+version = "0.1.0"
+description = "Asynchronous WanGP REST API on Modal."
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.116,<1",
+    "modal>=1.5,<2",
+    "pydantic>=2.11,<3",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4,<9",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

@@ -1,0 +1,48 @@
+# Secrets and local environment overrides
+.env
+.env.*
+!.env.example
+
+# Python environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Python build artifacts
+build/
+dist/
+*.egg-info/
+
+# Generated media and runtime files
+outputs/
+loras/
+*.log
+*.tmp
+
+# Large model artifacts
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+*.gguf
+
+# Modal and local agent/editor state
+.modal/
+.codex/
+.cursor/
+.vscode/
+.idea/
+
+# Operating-system and editor files
+.DS_Store
+Thumbs.db
+*.swp
+*~

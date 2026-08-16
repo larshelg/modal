@@ -1,0 +1,9 @@
+[project]
+name = "my-wangpt-modal-app"
+version = "0.1.0"
+description = "Wan2GP MCP server on Modal with persistent model and compiler caches."
+requires-python = ">=3.11"
+dependencies = [
+    "modal>=1.5,<2",
+]
+

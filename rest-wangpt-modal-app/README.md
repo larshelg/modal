@@ -1,0 +1,369 @@
+# WanGP REST API on Modal
+
+This app exposes WanGP as a protected asynchronous REST service. WanGP is used
+as the internal rendering engine through its documented `shared.api`; WanGP is
+not started as an MCP or Gradio server.
+
+The CPU control plane accepts requests immediately and uses Modal FunctionCalls
+as the job queue. GPU workers scale independently from zero to three L40S
+containers by default. Models, LoRAs, caches, settings, and outputs share the
+existing `wangp-data` Volume.
+
+## Deploy
+
+The existing `huggingface-secret` Modal secret must contain `HF_TOKEN`.
+
+```bash
+cd rest-wangpt-modal-app
+python3 -m modal deploy app.py
+```
+
+Optional deployment configuration:
+
+```bash
+export WANGP_GPU=L40S
+export WANGP_MAX_CONTAINERS=3
+python3 -m modal deploy app.py
+```
+
+The resulting endpoint requires Modal proxy-auth headers:
+
+```bash
+curl -H "Modal-Key: $MODAL_KEY" \
+  -H "Modal-Secret: $MODAL_SECRET" \
+  https://YOUR-ENDPOINT/health
+```
+
+## Using the REST API
+
+Set the endpoint URL printed by `modal deploy` and the Modal proxy credentials:
+
+```bash
+export WANGP_URL="https://YOUR-ENDPOINT"
+export MODAL_KEY="YOUR-MODAL-KEY"
+export MODAL_SECRET="YOUR-MODAL-SECRET"
+```
+
+Every request must include both authentication headers:
+
+```text
+Modal-Key: <key>
+Modal-Secret: <secret>
+```
+
+### Check service health
+
+```bash
+curl --fail-with-body \
+  -H "Modal-Key: $MODAL_KEY" \
+  -H "Modal-Secret: $MODAL_SECRET" \
+  "$WANGP_URL/health"
+```
+
+Example response:
+
+```json
+{
+  "service": "wangp-rest",
+  "ready": true,
+  "gpu": "L40S",
+  "max_gpu_containers": 3,
+  "wangp_commit": "a042474d477a741d6b9b60fc6ff304077113cb25",
+  "wan2ai_commit": "2539c3a87b64fa0f619695f02410fc92c63cba7d"
+}
+```
+
+### Discover models and settings
+
+List model metadata:
+
+```bash
+curl --fail-with-body \
+  -H "Modal-Key: $MODAL_KEY" \
+  -H "Modal-Secret: $MODAL_SECRET" \
+  "$WANGP_URL/models"
+```
+
+The model list supports optional filters:
+
+```bash
+# Filter by family.
+curl --get --fail-with-body \
+  -H "Modal-Key: $MODAL_KEY" \
+  -H "Modal-Secret: $MODAL_SECRET" \
+  --data-urlencode "family=qwen" \
+  "$WANGP_URL/models"
+
+```
+
+Get the native defaults or schema for one model:
+
+```bash
+MODEL="qwen_image_2512_20B"
+
+curl --fail-with-body \
+  -H "Modal-Key: $MODAL_KEY" \
+  -H "Modal-Secret: $MODAL_SECRET" \
+  "$WANGP_URL/models/$MODEL/defaults"
+
+curl --fail-with-body \
+  -H "Modal-Key: $MODAL_KEY" \
+  -H "Modal-Secret: $MODAL_SECRET" \
+  "$WANGP_URL/models/$MODEL/schema"
+```
+
+Model metadata, defaults, and schemas are generated from the pinned WanGP
+runtime while the Modal image is built. These endpoints are served from the
+baked JSON catalog by the CPU API container and never cold-start a GPU.
+`available=true` is not supported by the static catalog because checkpoint
+availability can change independently of the deployed image.
+
+### Submit a generation job
+
+`POST /jobs` accepts a model name and an opaque dictionary of native WanGP
+settings:
+
+```json
+{
+  "model": "qwen_image_2512_20B",
+  "params": {
+    "prompt": "A red fox in snow, cinematic natural light",
+    "resolution": "1024x1024",
+    "num_inference_steps": 4,
+    "seed": 12345,
+    "spatial_upsampling": "off"
+  }
+}
+```
+
+Submit it with `curl`:
+
+```bash
+curl --fail-with-body -X POST \
+  -H "Content-Type: application/json" \
+  -H "Modal-Key: $MODAL_KEY" \
+  -H "Modal-Secret: $MODAL_SECRET" \
+  "$WANGP_URL/jobs" \
+  --data-binary @- <<'JSON'
+{
+  "model": "qwen_image_2512_20B",
+  "params": {
+    "prompt": "A red fox in snow, cinematic natural light",
+    "resolution": "1024x1024",
+    "num_inference_steps": 4,
+    "seed": 12345,
+    "spatial_upsampling": "off"
+  }
+}
+JSON
+```
+
+The endpoint returns HTTP `202 Accepted` immediately:
+
+```json
+{
+  "id": "ba2972c6-65f3-44ec-8368-38708e99c28d",
+  "status": "queued"
+}
+```
+
+WanGP defaults are loaded first and then overlaid with `params`. The service
+always sets `model_type` from the top-level `model`; clients should not put it
+in `params`. The `_api` key is reserved and rejected.
+
+### Important flags
+
+The object returned by `GET /models/{model}/defaults` is a starting payload,
+not an exhaustive allowlist. WanGP may accept optional native settings that are
+not present in the defaults. Always consult `GET /models/{model}/schema` for
+capabilities, supported value choices, model definitions, and additional
+settings. Because `params` is intentionally opaque, supported native WanGP
+settings pass through without requiring a REST API change.
+
+Important general flags include:
+
+- `seed`: reproducible generation seed; commonly accepted even when omitted
+  from a model's defaults. Use `-1` when the model supports random seeds.
+- `resolution`: output dimensions in WanGP's `WIDTHxHEIGHT` format.
+- `num_inference_steps`: generation step count; distilled/turbo models usually
+  require their documented low step count.
+- `batch_size`: number of outputs generated by the task.
+- `negative_prompt`, `guidance_scale`, `flow_shift`, and
+  `denoising_strength`: model-dependent generation controls.
+- `activated_loras`: list of LoRA paths or identifiers understood by WanGP.
+- `loras_multipliers`: matching LoRA weights. Keep its ordering aligned with
+  `activated_loras`.
+- `spatial_upsampling`: WanGP upscaling mode; use `"off"` when upscaling should
+  be performed as a separate operation.
+- `_api`: reserved for the REST service and rejected in client payloads.
+- `model_type`: controlled by the top-level `model` field and overwritten by
+  the service.
+
+For the currently installed `krea2_turbo` checkpoint, the normal text-to-image
+starting point is:
+
+```json
+{
+  "model": "krea2_turbo",
+  "params": {
+    "prompt": "A red fox walking through fresh snow at golden hour",
+    "negative_prompt": "blurry, low quality",
+    "resolution": "1024x1024",
+    "num_inference_steps": 8,
+    "seed": 12345,
+    "batch_size": 1,
+    "guidance_scale": 0,
+    "flow_shift": 5.0
+  }
+}
+```
+
+Krea2 Turbo supports text-to-image, LoRAs, and inpainting. Its schema currently
+reports no image-to-image, reference-image, video, or audio capability. For
+inpainting, use `masking_strength`, `denoising_strength`, and `model_mode`:
+
+- `2`: LanPaint 2 steps, easy task.
+- `3`: LanPaint 5 steps, medium task.
+- `4`: LanPaint 10 steps, hard task.
+- `5`: LanPaint 15 steps, very hard task.
+
+### Poll job status and progress
+
+```bash
+export JOB_ID="ba2972c6-65f3-44ec-8368-38708e99c28d"
+
+curl --fail-with-body \
+  -H "Modal-Key: $MODAL_KEY" \
+  -H "Modal-Secret: $MODAL_SECRET" \
+  "$WANGP_URL/jobs/$JOB_ID"
+```
+
+Possible status values are `queued`, `running`, `succeeded`, `failed`, and
+`cancelled`. While a job is running, the response includes its latest structured
+WanGP progress when available:
+
+```json
+{
+  "id": "ba2972c6-65f3-44ec-8368-38708e99c28d",
+  "status": "running",
+  "model": "qwen_image_2512_20B",
+  "progress": {
+    "phase": "inference",
+    "status": "Prompt 1/1 | Denoising",
+    "progress": 50,
+    "current_step": 2,
+    "total_steps": 4
+  },
+  "created_at": "2026-08-13T08:00:00+00:00",
+  "started_at": "2026-08-13T08:00:02+00:00",
+  "updated_at": "2026-08-13T08:00:20+00:00"
+}
+```
+
+A successful terminal response contains storage-agnostic metadata and protected
+download URLs for the files stored in the shared Volume:
+
+```json
+{
+  "id": "ba2972c6-65f3-44ec-8368-38708e99c28d",
+  "status": "succeeded",
+  "model": "qwen_image_2512_20B",
+  "result": {
+    "success": true,
+    "outputs": [
+      {
+        "id": "2d457dea-9cc8-436f-ad85-d72fefec2343",
+        "filename": "2026-08-13-result.png",
+        "size_bytes": 1842201,
+        "media_type": "image/png",
+        "url": "/outputs/2d457dea-9cc8-436f-ad85-d72fefec2343"
+      }
+    ],
+    "total_tasks": 1,
+    "successful_tasks": 1,
+    "failed_tasks": 0,
+    "errors": []
+  }
+}
+```
+
+Download an output using its `url`. The endpoint uses the same Modal proxy
+authentication as every other route:
+
+```bash
+OUTPUT_URL="/outputs/2d457dea-9cc8-436f-ad85-d72fefec2343"
+
+curl --fail-with-body --location \
+  -H "Modal-Key: $MODAL_KEY" \
+  -H "Modal-Secret: $MODAL_SECRET" \
+  --output "result.png" \
+  "$WANGP_URL$OUTPUT_URL"
+```
+
+The public result does not expose the internal `/data` filesystem path. Download
+URLs remain valid while their output and job records remain in the Modal Dict.
+The API mounts `wangp-data` read-only and reloads it before serving a file.
+
+### Cancel a job
+
+```bash
+curl --fail-with-body -X POST \
+  -H "Modal-Key: $MODAL_KEY" \
+  -H "Modal-Secret: $MODAL_SECRET" \
+  "$WANGP_URL/jobs/$JOB_ID/cancel"
+```
+
+Cancellation terminates the job's Modal FunctionCall and its single-purpose GPU
+container. Repeating cancellation for a cancelled job is safe. Cancelling a job
+that has already succeeded or failed returns HTTP `409 Conflict`.
+
+### Reference images, videos, audio, and LoRAs
+
+There is no upload endpoint in v1. Place input assets in the shared `wangp-data`
+Volume first, then use their absolute `/data/...` paths in the native WanGP
+parameters:
+
+```json
+{
+  "model": "i2v_2_2",
+  "params": {
+    "prompt": "The subject turns toward the camera",
+    "image_start": "/data/inputs/portrait.png",
+    "resolution": "832x480",
+    "video_length": 81
+  }
+}
+```
+
+Virtual-media suffixes are supported because WanGP receives the path unchanged:
+
+```json
+{
+  "video_guide": "/data/inputs/source.mp4|start_frame=120,end_frame=240"
+}
+```
+
+Absolute paths outside `/data` and paths that traverse outside `/data` are
+rejected. URLs are not downloaded by the REST layer.
+
+### HTTP errors and retention
+
+- `400 Bad Request`: reserved `_api` settings or an invalid filesystem path.
+- `401/403`: missing or invalid Modal proxy credentials.
+- `404 Not Found`: unknown model, job, or expired job result.
+- `409 Conflict`: cancellation requested after successful or failed completion.
+- `422 Unprocessable Entity`: malformed JSON or an invalid request shape.
+- `500 Internal Server Error`: unexpected control-plane failure.
+
+Generation failures normally produce a terminal `failed` job record with
+structured errors rather than turning the polling request into an HTTP 500.
+Records in `wangp-rest-jobs` expire after seven days without reads or writes.
+
+## Test
+
+```bash
+uv run pytest
+python3 -m modal deploy --help
+```
+
+WanGP and Wan2AI revisions are pinned in `app.py` for reproducible builds.
