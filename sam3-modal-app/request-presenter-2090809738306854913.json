@@ -1,0 +1,7 @@
+{
+  "anchor_frame": 90,
+  "box_xywh": [0.59, 0.18, 0.39, 0.8],
+  "text_prompt": "person",
+  "output_prob_threshold": 0.5,
+  "include_debug_png_zip": false
+}

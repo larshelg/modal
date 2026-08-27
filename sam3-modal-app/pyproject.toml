@@ -1,0 +1,23 @@
+[project]
+name = "sam3-modal-app"
+version = "0.1.0"
+description = "Pinned SAM 3.1 S3-native presenter-mask and display-detection stages."
+requires-python = ">=3.12"
+dependencies = [
+    "boto3>=1.40,<2",
+    "imageio[ffmpeg]>=2.37,<3",
+    "modal>=1.5,<2",
+    "numpy>=1.26,<2",
+    "opencv-python-headless>=4.10,<4.12",
+    "pillow>=11,<13",
+]
+
+[dependency-groups]
+dev = [
+    "numpy>=1.26,<2",
+    "pytest>=8.4,<9",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

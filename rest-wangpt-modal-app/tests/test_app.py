@@ -4,12 +4,19 @@ from types import SimpleNamespace
 import pytest
 
 from app import (
+    FIZGIG_JOB_DICT_NAME,
+    JOB_DICT_NAME,
+    TRAINING_JOB_DICT_NAME,
     canonical_output_path,
     filter_models,
+    merge_training_record,
     normalized_absolute_path,
+    public_training_record,
+    resolve_generation_kind,
     serialize_result,
     validate_data_paths,
     validate_job_request,
+    validate_training_request,
 )
 
 
@@ -108,3 +115,215 @@ def test_filter_models_uses_cached_metadata():
     ]
     assert filter_models(models, family="qwen") == [models[0]]
     assert filter_models(models, model_type="two") == [models[1]]
+
+
+@pytest.fixture
+def generation_catalog():
+    return {
+        "models": [
+            {"model_type": "krea2_turbo", "main_output": ["image"]},
+            {"model_type": "minimax_h3", "main_output": ["video"]},
+            {"model_type": "switchable", "main_output": ["image", "video"]},
+            {"model_type": "tts", "main_output": ["audio"]},
+        ],
+        "defaults": {
+            "switchable": {"image_mode": 0},
+        },
+    }
+
+
+def test_generation_kind_is_inferred_from_model_metadata(generation_catalog):
+    assert resolve_generation_kind(generation_catalog, "krea2_turbo") == "image"
+    assert resolve_generation_kind(generation_catalog, "minimax_h3") == "video"
+    assert resolve_generation_kind(generation_catalog, "tts") == "audio"
+
+
+def test_generation_kind_accepts_matching_explicit_route(generation_catalog):
+    assert (
+        resolve_generation_kind(generation_catalog, "minimax_h3", "video")
+        == "video"
+    )
+
+
+def test_generation_kind_rejects_model_route_mismatch(generation_catalog):
+    with pytest.raises(ValueError, match="not image"):
+        resolve_generation_kind(generation_catalog, "minimax_h3", "image")
+
+
+def test_generation_kind_rejects_unknown_model(generation_catalog):
+    with pytest.raises(ValueError, match="unknown model"):
+        resolve_generation_kind(generation_catalog, "missing")
+
+
+def test_generation_kind_uses_native_image_mode_for_dual_output_model(
+    generation_catalog,
+):
+    assert resolve_generation_kind(generation_catalog, "switchable") == "video"
+    assert (
+        resolve_generation_kind(
+            generation_catalog,
+            "switchable",
+            params={"image_mode": 2},
+        )
+        == "image"
+    )
+
+
+def test_training_request_contains_only_public_intent():
+    assert validate_training_request(
+        {
+            "family": "minimax_h3",
+            "dataset": "anna",
+            "output_name": "anna_h3",
+            "preset": "h3_character_fast",
+        }
+    ) == {
+        "family": "minimax_h3",
+        "dataset": "anna",
+        "output_name": "anna_h3",
+        "preset": "h3_character_fast",
+    }
+
+
+def test_krea2_request_leaves_execution_defaults_to_worker_preset():
+    assert validate_training_request(
+        {
+            "family": "krea2",
+            "dataset": "linda",
+            "output_name": "linda_krea2_v1",
+            "preset": "krea2_defaults",
+            "trigger_word": "linda",
+            "epochs": 24,
+        }
+    ) == {
+        "family": "krea2",
+        "dataset": "linda",
+        "output_name": "linda_krea2_v1",
+        "preset": "krea2_defaults",
+        "trigger_word": "linda",
+        "epochs": 24,
+    }
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        (
+            {
+                "family": "unknown",
+                "dataset": "anna",
+                "output_name": "anna",
+                "preset": "h3_character_fast",
+            },
+            "family",
+        ),
+        (
+            {
+                "family": "minimax_h3",
+                "dataset": "../anna",
+                "output_name": "anna",
+                "preset": "h3_character_fast",
+            },
+            "must not contain a path",
+        ),
+        (
+            {
+                "family": "minimax_h3",
+                "dataset": "anna",
+                "output_name": "anna",
+                "preset": "h3_character_fast",
+                "epochs": True,
+            },
+            "integer",
+        ),
+        (
+            {
+                "family": "minimax_h3",
+                "dataset": "anna",
+                "output_name": "anna",
+                "preset": "h3_character_fast",
+                "unknown": 1,
+            },
+            "unsupported",
+        ),
+        (
+            {
+                "family": "krea2",
+                "dataset": "linda",
+                "output_name": "linda",
+                "preset": "krea2_defaults",
+                "auto_caption": True,
+            },
+            "unsupported",
+        ),
+        ({"dataset": "anna", "output_name": "anna"}, "missing required"),
+    ],
+)
+def test_training_request_rejects_unsupported_or_unsafe_values(body, message):
+    with pytest.raises(ValueError, match=message):
+        validate_training_request(body)
+
+
+def test_training_resume_state_is_endpoint_controlled():
+    request = {
+        "family": "minimax_h3",
+        "dataset": "anna",
+        "output_name": "anna_h3",
+        "preset": "h3_character_fast",
+        "resume_from": "anna_h3-epoch-10-state",
+    }
+    with pytest.raises(ValueError, match="resume endpoint"):
+        validate_training_request(request)
+    assert validate_training_request(request, allow_resume=True)["resume_from"] == (
+        "anna_h3-epoch-10-state"
+    )
+
+
+def test_training_record_merge_preserves_public_identity_and_request():
+    public = {
+        "id": "public-id",
+        "call_id": "call-id",
+        "status": "queued",
+        "request": {"dataset": "anna"},
+        "created_at": "created",
+    }
+    internal = {
+        "id": "internal-id",
+        "status": "running",
+        "request": {"dataset": "other"},
+        "progress": {"phase": "training"},
+        "started_at": "started",
+        "updated_at": "updated",
+    }
+    assert merge_training_record(public, internal) == {
+        **public,
+        "status": "running",
+        "progress": {"phase": "training"},
+        "started_at": "started",
+        "updated_at": "updated",
+    }
+
+
+def test_public_training_record_omits_internal_log_tail():
+    record = {
+        "id": "job-id",
+        "call_id": "internal-call-id",
+        "status": "running",
+        "pause_requested": False,
+        "progress": {
+            "phase": "training",
+            "epoch": 2,
+            "epochs_total": 30,
+            "log_tail": ["internal output"],
+        },
+    }
+    assert public_training_record(record) == {
+        "id": "job-id",
+        "status": "running",
+        "progress": {"phase": "training", "epoch": 2, "epochs_total": 30},
+    }
+    assert "log_tail" in record["progress"]
+
+
+def test_training_and_generation_use_separate_job_domains():
+    assert len({JOB_DICT_NAME, TRAINING_JOB_DICT_NAME, FIZGIG_JOB_DICT_NAME}) == 3

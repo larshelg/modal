@@ -1,30 +1,53 @@
-# WanGP REST API on Modal
+# WanGP and Fizgig REST API on Modal
 
-This app exposes WanGP as a protected asynchronous REST service. WanGP is used
-as the internal rendering engine through its documented `shared.api`; WanGP is
-not started as an MCP or Gradio server.
+This app is the protected asynchronous REST control plane for two independently
+deployed Modal runtimes:
+
+- WanGP generation runs through separate image and video workers using WanGP's
+  documented `shared.api`. Image and audio jobs use L40S by default; video jobs
+  use H100.
+- Fizgig training is dispatched by name to the separately deployed
+  `fizgig-modal-app`; this REST app does not contain or duplicate Fizgig's CLI
+  integration.
 
 The CPU control plane accepts requests immediately and uses Modal FunctionCalls
-as the job queue. GPU workers scale independently from zero to three L40S
-containers by default. Models, LoRAs, caches, settings, and outputs share the
-existing `wangp-data` Volume.
+as the job queue. The image and video worker pools scale independently. Models,
+LoRAs, caches, settings, and outputs share the existing `wangp-data` Volume.
+Generation and training use separate public Modal Dicts so their records cannot
+collide.
 
 ## Deploy
 
-The existing `huggingface-secret` Modal secret must contain `HF_TOKEN`.
+The existing `huggingface-secret` Modal secret must contain `HF_TOKEN`. Deploy
+the Fizgig execution app first, then deploy this shared REST app in the same
+Modal environment:
 
 ```bash
-cd rest-wangpt-modal-app
+cd fizgig-modal-app
+python3 -m modal deploy app.py
+
+cd ../rest-wangpt-modal-app
 python3 -m modal deploy app.py
 ```
 
 Optional deployment configuration:
 
 ```bash
-export WANGP_GPU=L40S
-export WANGP_MAX_CONTAINERS=3
+export WANGP_IMAGE_GPU=L40S
+export WANGP_IMAGE_MAX_CONTAINERS=3
+export WANGP_VIDEO_GPU=H100
+export WANGP_VIDEO_MAX_CONTAINERS=1
+export FIZGIG_MODAL_APP_NAME=fizgig-modal-app
 python3 -m modal deploy app.py
 ```
+
+`WANGP_GPU` and `WANGP_MAX_CONTAINERS` remain backward-compatible aliases for
+the image worker. The video worker defaults to 128 GiB host RAM and WanGP memory
+profile 3; override these with `WANGP_VIDEO_MEMORY_MB` and
+`WANGP_VIDEO_PROFILE` when benchmarking a different H100 configuration.
+
+`FIZGIG_MODAL_APP_NAME` defaults to `fizgig-modal-app`. The function names are
+the fixed internal contract `run_training` and `request_pause`.
 
 The resulting endpoint requires Modal proxy-auth headers:
 
@@ -68,10 +91,157 @@ Example response:
   "ready": true,
   "gpu": "L40S",
   "max_gpu_containers": 3,
-  "wangp_commit": "a042474d477a741d6b9b60fc6ff304077113cb25",
-  "wan2ai_commit": "2539c3a87b64fa0f619695f02410fc92c63cba7d"
+  "generation_workers": {
+    "image": {
+      "gpu": "L40S",
+      "max_containers": 3,
+      "memory_mb": 65536,
+      "wangp_profile": "4"
+    },
+    "video": {
+      "gpu": "H100",
+      "max_containers": 1,
+      "memory_mb": 131072,
+      "wangp_profile": "3"
+    }
+  },
+  "wangp_commit": "92f56e5ee7227d490f6d85281c019e4c4e2dc393",
+  "wan2ai_commit": "2539c3a87b64fa0f619695f02410fc92c63cba7d",
+  "fizgig_app": "fizgig-modal-app",
+  "training_families": ["minimax_h3", "krea2"]
 }
 ```
+
+The health route reports the configured Fizgig app name without cold-starting
+it. A training submission returns `503 Service Unavailable` if that deployment
+cannot be resolved or called.
+
+## Fizgig training API
+
+Training supports Krea2 with `krea2_defaults` and `krea2_ultra_fast`, and
+MiniMax H3 with `h3_character_fast` and `h3_character_quality`. Place images in
+the shared Modal Volume at `/data/fizgig/datasets/<dataset>/images` before
+submission.
+
+For Krea2, the execution app uses the pinned Krea2 Qwen3-VL encoder to generate
+missing or empty caption sidecars before caching. It preserves existing
+non-empty captions, runs the official Krea2 latent and text cache scripts, and
+trains with per-image loss/LR support plus Fizgig's between-epoch
+auto-recaptioning. H3 still requires prepared caption sidecars.
+
+### Submit a training job
+
+```bash
+curl --fail-with-body -X POST \
+  -H "Content-Type: application/json" \
+  -H "Modal-Key: $MODAL_KEY" \
+  -H "Modal-Secret: $MODAL_SECRET" \
+  "$WANGP_URL/training/jobs" \
+  --data-binary @- <<'JSON'
+{
+  "family": "krea2",
+  "dataset": "linda",
+  "output_name": "linda_krea2_v1",
+  "preset": "krea2_defaults",
+  "trigger_word": "linda"
+}
+JSON
+```
+
+The response is HTTP `202 Accepted`:
+
+```json
+{
+  "id": "5ed81512-87c4-4888-a438-d23693507c21",
+  "status": "queued"
+}
+```
+
+The required fields are `family`, `dataset`, `output_name`, and `preset`.
+`trigger_word` and `epochs` are optional. Captioning, recaptioning, seed,
+checkpoint cadence, and preview behavior are resolved by the selected worker
+preset. Clients cannot set `resume_from`; the resume route selects it from a
+successfully paused job.
+
+### Poll training status
+
+```bash
+export TRAINING_JOB_ID="5ed81512-87c4-4888-a438-d23693507c21"
+
+curl --fail-with-body \
+  -H "Modal-Key: $MODAL_KEY" \
+  -H "Modal-Secret: $MODAL_SECRET" \
+  "$WANGP_URL/training/jobs/$TRAINING_JOB_ID"
+```
+
+Training uses the same top-level statuses as generation: `queued`, `running`,
+`succeeded`, `failed`, and `cancelled`. Detailed work appears under
+`progress.phase`, including dataset preparation, captioning, caching, training,
+finalizing, paused, and completed phases.
+
+A completed run promotes the final LoRA into the shared Volume and reports it
+in the terminal record:
+
+```json
+{
+  "id": "5ed81512-87c4-4888-a438-d23693507c21",
+  "status": "succeeded",
+  "progress": {"phase": "completed"},
+  "result": {
+    "paused": false,
+    "artifact_path": "/data/loras/linda_krea2_v1.safetensors",
+    "run_path": "/data/fizgig/runs/linda_krea2_v1",
+    "size_bytes": 12345678
+  }
+}
+```
+
+### Pause, resume, or cancel training
+
+Pause requests are cooperative. The current Fizgig stage writes a persisted
+state checkpoint and then finishes with `status: "succeeded"`,
+`progress.phase: "paused"`, and `result.paused: true`:
+
+```bash
+curl --fail-with-body -X POST \
+  -H "Modal-Key: $MODAL_KEY" \
+  -H "Modal-Secret: $MODAL_SECRET" \
+  "$WANGP_URL/training/jobs/$TRAINING_JOB_ID/pause"
+```
+
+After polling reaches the paused terminal record, resume it. Resume creates a
+new job ID and links it to the previous job:
+
+```bash
+curl --fail-with-body -X POST \
+  -H "Modal-Key: $MODAL_KEY" \
+  -H "Modal-Secret: $MODAL_SECRET" \
+  "$WANGP_URL/training/jobs/$TRAINING_JOB_ID/resume"
+```
+
+```json
+{
+  "id": "144649c2-37e7-423e-976a-274e3fd37ba8",
+  "status": "queued",
+  "resumed_from": "5ed81512-87c4-4888-a438-d23693507c21"
+}
+```
+
+Cancel immediately terminates the training FunctionCall and its single-purpose
+GPU container:
+
+```bash
+curl --fail-with-body -X POST \
+  -H "Modal-Key: $MODAL_KEY" \
+  -H "Modal-Secret: $MODAL_SECRET" \
+  "$WANGP_URL/training/jobs/$TRAINING_JOB_ID/cancel"
+```
+
+Pause is valid only while a job is running. Resume is valid only for a
+successfully paused job. Cancel is idempotent for an already cancelled job;
+invalid lifecycle transitions return `409 Conflict`.
+
+## WanGP generation API
 
 ### Discover models and settings
 
@@ -125,6 +295,7 @@ settings:
 
 ```json
 {
+  "kind": "image",
   "model": "qwen_image_2512_20B",
   "params": {
     "prompt": "A red fox in snow, cinematic natural light",
@@ -136,6 +307,13 @@ settings:
 }
 ```
 
+`kind` accepts `image`, `video`, or `audio`. It is optional: the API normally
+infers it from the model catalog. Supplying it makes the intended route
+explicit, and the API returns `400 Bad Request` if it conflicts with the
+selected model. Video jobs route to the H100 pool; image and audio jobs route to
+the L40S pool. For a model that can produce both image and video, inference uses
+the effective native `image_mode` setting.
+
 Submit it with `curl`:
 
 ```bash
@@ -146,6 +324,7 @@ curl --fail-with-body -X POST \
   "$WANGP_URL/jobs" \
   --data-binary @- <<'JSON'
 {
+  "kind": "image",
   "model": "qwen_image_2512_20B",
   "params": {
     "prompt": "A red fox in snow, cinematic natural light",
@@ -163,7 +342,8 @@ The endpoint returns HTTP `202 Accepted` immediately:
 ```json
 {
   "id": "ba2972c6-65f3-44ec-8368-38708e99c28d",
-  "status": "queued"
+  "status": "queued",
+  "kind": "image"
 }
 ```
 
@@ -353,11 +533,14 @@ rejected. URLs are not downloaded by the REST layer.
 - `404 Not Found`: unknown model, job, or expired job result.
 - `409 Conflict`: cancellation requested after successful or failed completion.
 - `422 Unprocessable Entity`: malformed JSON or an invalid request shape.
+- `503 Service Unavailable`: the Fizgig deployment or a training lifecycle
+  operation could not be reached.
 - `500 Internal Server Error`: unexpected control-plane failure.
 
 Generation failures normally produce a terminal `failed` job record with
 structured errors rather than turning the polling request into an HTTP 500.
-Records in `wangp-rest-jobs` expire after seven days without reads or writes.
+Generation records use `wangp-rest-jobs`; public training records use
+`fizgig-rest-jobs`; worker-owned training state uses `fizgig-modal-jobs`.
 
 ## Test
 

@@ -1,13 +1,15 @@
-"""Asynchronous WanGP REST API on Modal.
+"""Asynchronous WanGP generation and Fizgig training REST API on Modal.
 
-WanGP is the internal rendering engine. The public CPU endpoint submits work to
-an autoscaling GPU class and returns immediately with a pollable job ID.
+WanGP runs in this app. Fizgig training is dispatched to the independently
+deployed ``fizgig-modal-app``. The protected endpoint returns pollable job IDs
+for both domains.
 """
 
 from __future__ import annotations
 
 import mimetypes
 import os
+import re
 import shutil
 import uuid
 from datetime import datetime, timezone
@@ -22,16 +24,58 @@ WAN_ROOT = Path("/opt/Wan2GP")
 WAN2AI_ROOT = Path("/opt/Wan2AI")
 DATA_ROOT = Path("/data")
 CATALOG_PATH = Path("/opt/wangp-catalog.json")
-WAN_COMMIT = "a042474d477a741d6b9b60fc6ff304077113cb25"
+WAN_COMMIT = "92f56e5ee7227d490f6d85281c019e4c4e2dc393"
 WAN2AI_COMMIT = "2539c3a87b64fa0f619695f02410fc92c63cba7d"
 
-GPU_TYPE = os.environ.get("WANGP_GPU", "L40S")
-MAX_CONTAINERS = int(os.environ.get("WANGP_MAX_CONTAINERS", "3"))
+IMAGE_GPU_TYPE = os.environ.get(
+    "WANGP_IMAGE_GPU",
+    os.environ.get("WANGP_GPU", "L40S"),
+)
+VIDEO_GPU_TYPE = os.environ.get("WANGP_VIDEO_GPU", "H100")
+IMAGE_MAX_CONTAINERS = int(
+    os.environ.get(
+        "WANGP_IMAGE_MAX_CONTAINERS",
+        os.environ.get("WANGP_MAX_CONTAINERS", "3"),
+    )
+)
+VIDEO_MAX_CONTAINERS = int(os.environ.get("WANGP_VIDEO_MAX_CONTAINERS", "1"))
+IMAGE_MEMORY_MB = int(os.environ.get("WANGP_IMAGE_MEMORY_MB", "65536"))
+VIDEO_MEMORY_MB = int(os.environ.get("WANGP_VIDEO_MEMORY_MB", "131072"))
+IMAGE_WANGP_PROFILE = os.environ.get("WANGP_IMAGE_PROFILE", "4")
+VIDEO_WANGP_PROFILE = os.environ.get("WANGP_VIDEO_PROFILE", "3")
 SCALEDOWN_WINDOW = 5 * 60
 STARTUP_TIMEOUT = 30 * 60
 
+# Backward-compatible health aliases for clients that predate split workers.
+GPU_TYPE = IMAGE_GPU_TYPE
+MAX_CONTAINERS = IMAGE_MAX_CONTAINERS
+
 DATA_VOLUME_NAME = "wangp-data"
 JOB_DICT_NAME = "wangp-rest-jobs"
+TRAINING_JOB_DICT_NAME = "fizgig-rest-jobs"
+FIZGIG_JOB_DICT_NAME = "fizgig-modal-jobs"
+
+FIZGIG_APP_NAME = os.environ.get("FIZGIG_MODAL_APP_NAME", "fizgig-modal-app")
+FIZGIG_RUN_FUNCTION = "run_training"
+FIZGIG_PAUSE_FUNCTION = "request_pause"
+SUPPORTED_TRAINING_FAMILIES = ("minimax_h3", "krea2")
+SUPPORTED_TRAINING_PRESETS = {
+    "h3_character_fast": "minimax_h3",
+    "h3_character_quality": "minimax_h3",
+    "krea2_defaults": "krea2",
+    "krea2_ultra_fast": "krea2",
+}
+TRAINING_TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
+_SAFE_TRAINING_COMPONENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_ALLOWED_TRAINING_REQUEST_KEYS = {
+    "family",
+    "dataset",
+    "output_name",
+    "preset",
+    "trigger_word",
+    "epochs",
+    "resume_from",
+}
 
 CACHE_DIRS = (
     "ckpts",
@@ -48,6 +92,14 @@ CACHE_DIRS = (
 
 data_volume = modal.Volume.from_name(DATA_VOLUME_NAME, create_if_missing=True)
 job_store = modal.Dict.from_name(JOB_DICT_NAME, create_if_missing=True)
+training_job_store = modal.Dict.from_name(
+    TRAINING_JOB_DICT_NAME,
+    create_if_missing=True,
+)
+fizgig_job_store = modal.Dict.from_name(
+    FIZGIG_JOB_DICT_NAME,
+    create_if_missing=True,
+)
 
 gpu_image = (
     modal.Image.from_registry(
@@ -96,6 +148,11 @@ gpu_image = (
     )
     .run_commands("python /opt/generate_catalog.py")
 )
+
+# Share the expensive WanGP build layers while keeping independent Modal images
+# for the two worker pools.
+image_worker_image = gpu_image.env({"WANGP_WORKER_KIND": "image"})
+video_worker_image = gpu_image.env({"WANGP_WORKER_KIND": "video"})
 
 # Discovery is served by a CPU container from the catalog baked into this
 # image. Sharing the image with GPU workers avoids maintaining two copies of
@@ -159,6 +216,130 @@ def validate_data_paths(value: Any, key: str = "params") -> None:
             normalized_absolute_path(raw_path).relative_to(DATA_ROOT)
         except ValueError as exc:
             raise ValueError(f"{key} must reference a path under /data") from exc
+
+
+def _training_component(value: Any, field: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a string")
+    value = value.strip()
+    if not _SAFE_TRAINING_COMPONENT.fullmatch(value) or value in {".", ".."}:
+        raise ValueError(
+            f"{field} must contain only letters, numbers, '.', '_' or '-' and "
+            "must not contain a path"
+        )
+    return value
+
+
+def _training_int(value: Any, field: str, minimum: int, maximum: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{field} must be an integer")
+    if not minimum <= value <= maximum:
+        raise ValueError(f"{field} must be between {minimum} and {maximum}")
+    return value
+
+
+def validate_training_request(
+    request: dict[str, Any],
+    *,
+    allow_resume: bool = False,
+) -> dict[str, Any]:
+    """Validate the public Fizgig contract without translating it to CLI flags."""
+    if not isinstance(request, dict):
+        raise ValueError("request must be an object")
+    unknown = sorted(set(request) - _ALLOWED_TRAINING_REQUEST_KEYS)
+    if unknown:
+        raise ValueError(f"unsupported request fields: {', '.join(unknown)}")
+    if "resume_from" in request and not allow_resume:
+        raise ValueError("resume_from is controlled by the resume endpoint")
+
+    missing = sorted(
+        field
+        for field in ("family", "dataset", "output_name", "preset")
+        if field not in request
+    )
+    if missing:
+        raise ValueError(f"missing required fields: {', '.join(missing)}")
+
+    family = request["family"]
+    if family not in SUPPORTED_TRAINING_FAMILIES:
+        choices = ", ".join(SUPPORTED_TRAINING_FAMILIES)
+        raise ValueError(f"family must be one of: {choices}")
+    dataset = _training_component(request["dataset"], "dataset")
+    output_name = _training_component(request["output_name"], "output_name")
+    preset = request["preset"]
+    if preset not in SUPPORTED_TRAINING_PRESETS:
+        choices = ", ".join(sorted(SUPPORTED_TRAINING_PRESETS))
+        raise ValueError(f"preset must be one of: {choices}")
+    if SUPPORTED_TRAINING_PRESETS[preset] != family:
+        raise ValueError(f"preset {preset!r} does not support family {family!r}")
+
+    epochs = request.get("epochs")
+    if epochs is not None:
+        epochs = _training_int(epochs, "epochs", 1, 500)
+
+    trigger_word = request.get("trigger_word")
+    if trigger_word is not None:
+        trigger_word = _training_component(trigger_word, "trigger_word")
+
+    resume_from = request.get("resume_from")
+    if resume_from is not None and resume_from != "latest":
+        resume_from = _training_component(resume_from, "resume_from")
+        if not resume_from.endswith("-state"):
+            raise ValueError(
+                "resume_from must be 'latest' or a state-directory basename"
+            )
+
+    normalized = {
+        "family": family,
+        "dataset": dataset,
+        "output_name": output_name,
+        "preset": preset,
+    }
+    if trigger_word is not None:
+        normalized["trigger_word"] = trigger_word
+    if epochs is not None:
+        normalized["epochs"] = epochs
+    if resume_from is not None:
+        normalized["resume_from"] = resume_from
+    return normalized
+
+
+def merge_training_record(
+    public_record: dict[str, Any],
+    internal_record: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Reconcile worker-owned lifecycle fields into the public job record."""
+    merged = dict(public_record)
+    if not internal_record:
+        return merged
+    internal_status = internal_record.get("status")
+    if internal_status in {"queued", "running"} | TRAINING_TERMINAL_STATUSES:
+        merged["status"] = internal_status
+    for key in (
+        "progress",
+        "result",
+        "error",
+        "pause_requested",
+        "started_at",
+        "completed_at",
+        "updated_at",
+    ):
+        if key in internal_record:
+            merged[key] = internal_record[key]
+    return merged
+
+
+def public_training_record(record: dict[str, Any]) -> dict[str, Any]:
+    """Return the stable status resource without internal diagnostic logs."""
+    public = dict(record)
+    public.pop("call_id", None)
+    public.pop("pause_requested", None)
+    progress = public.get("progress")
+    if isinstance(progress, dict):
+        public_progress = dict(progress)
+        public_progress.pop("log_tail", None)
+        public["progress"] = public_progress
+    return public
 
 
 def serialize_error(error: Any) -> dict[str, Any]:
@@ -234,6 +415,58 @@ def filter_models(
     return result
 
 
+def resolve_generation_kind(
+    catalog: dict[str, Any],
+    model: str,
+    requested_kind: str | None = None,
+    params: dict[str, Any] | None = None,
+) -> Literal["image", "video", "audio"]:
+    """Resolve and validate the worker route from WanGP model metadata."""
+    model = model.strip()
+    metadata = next(
+        (
+            item
+            for item in catalog.get("models", [])
+            if item.get("model_type") == model
+        ),
+        None,
+    )
+    if metadata is None:
+        raise ValueError(f"unknown model: {model}")
+
+    raw_outputs = metadata.get("main_output", [])
+    if isinstance(raw_outputs, str):
+        raw_outputs = [raw_outputs]
+    outputs = [
+        output
+        for output in raw_outputs
+        if output in {"image", "video", "audio"}
+    ]
+    if not outputs:
+        raise ValueError(f"model {model!r} does not declare a routable output type")
+
+    if requested_kind is not None:
+        if requested_kind not in {"image", "video", "audio"}:
+            raise ValueError("kind must be one of: image, video, audio")
+        if requested_kind not in outputs:
+            choices = ", ".join(outputs)
+            raise ValueError(
+                f"model {model!r} supports {choices}, not {requested_kind}"
+            )
+        return requested_kind
+
+    if len(outputs) == 1:
+        return outputs[0]
+
+    # Models that switch between image and video use image_mode. Overlay the
+    # request on baked defaults to preserve WanGP's native behavior.
+    settings = dict(catalog.get("defaults", {}).get(model, {}))
+    settings.update(params or {})
+    if "image" in outputs and "video" in outputs:
+        return "image" if settings.get("image_mode", 0) else "video"
+    return outputs[0]
+
+
 def _ensure_cache_layout() -> None:
     for relative_path in CACHE_DIRS:
         (DATA_ROOT / relative_path).mkdir(parents=True, exist_ok=True)
@@ -273,27 +506,17 @@ class JobCallbacks:
         job_store.put(self.job_id, record)
 
 
-@app.cls(
-    image=gpu_image,
-    gpu=GPU_TYPE,
-    memory=65_536,
-    min_containers=0,
-    max_containers=MAX_CONTAINERS,
-    scaledown_window=SCALEDOWN_WINDOW,
-    startup_timeout=STARTUP_TIMEOUT,
-    timeout=24 * 60 * 60,
-    volumes={str(DATA_ROOT): data_volume},
-    secrets=[modal.Secret.from_name("huggingface-secret", required_keys=["HF_TOKEN"])],
-)
-class WanGPWorker:
-    @modal.enter()
+class WanGPRuntime:
+    def __init__(self, profile: str) -> None:
+        self.profile = profile
+        self.session = None
+        self.model_family = None
+
     def initialize(self) -> None:
         _ensure_cache_layout()
         for name in ("ckpts", "outputs", "settings", "loras"):
             _force_directory_symlink(WAN_ROOT / name, DATA_ROOT / name)
         data_volume.commit()
-        self.session = None
-        self.model_family = None
 
     def _new_session(self) -> Any:
         from shared.api import init
@@ -301,7 +524,7 @@ class WanGPWorker:
         return init(
             root=WAN_ROOT,
             output_dir=DATA_ROOT / "outputs",
-            cli_args=["--profile", "4", "--attention", "sdpa"],
+            cli_args=["--profile", self.profile, "--attention", "sdpa"],
             console_output=True,
         )
 
@@ -314,7 +537,6 @@ class WanGPWorker:
             self.model_family = family
         return self.session
 
-    @modal.method()
     def run(self, job_id: str, model: str, params: dict[str, Any]) -> dict[str, Any]:
         record = job_store.get(job_id, {})
         if record.get("status") == "cancelled":
@@ -352,41 +574,61 @@ class WanGPWorker:
             if record.get("status") != "cancelled":
                 record.update(
                     status="failed",
-                    result={"success": False, "errors": [{"message": str(exc), "stage": "runtime"}]},
+                    result={
+                        "success": False,
+                        "errors": [{"message": str(exc), "stage": "runtime"}],
+                    },
                     completed_at=utc_now(),
                     updated_at=utc_now(),
                 )
                 job_store.put(job_id, record)
             raise
 
-    @modal.method()
-    def list_models(
-        self,
-        family: str | None = None,
-        model_type: str | None = None,
-        include_availability: bool = False,
-    ) -> list[dict[str, Any]]:
-        data_volume.reload()
-        session = self._session_for("discovery")
-        filters = {}
-        if family:
-            filters["family"] = family
-        if model_type:
-            filters["model_type"] = model_type
-        return session.list_model_metadata(
-            include_availability=include_availability,
-            **filters,
-        )
+
+@app.cls(
+    image=image_worker_image,
+    gpu=IMAGE_GPU_TYPE,
+    memory=IMAGE_MEMORY_MB,
+    min_containers=0,
+    max_containers=IMAGE_MAX_CONTAINERS,
+    scaledown_window=SCALEDOWN_WINDOW,
+    startup_timeout=STARTUP_TIMEOUT,
+    timeout=24 * 60 * 60,
+    volumes={str(DATA_ROOT): data_volume},
+    secrets=[modal.Secret.from_name("huggingface-secret", required_keys=["HF_TOKEN"])],
+)
+class WanGPImageWorker:
+    @modal.enter()
+    def initialize(self) -> None:
+        self.runtime = WanGPRuntime(IMAGE_WANGP_PROFILE)
+        self.runtime.initialize()
 
     @modal.method()
-    def defaults(self, model: str) -> dict[str, Any]:
-        data_volume.reload()
-        return self._session_for(model).get_default_settings(model)
+    def run(self, job_id: str, model: str, params: dict[str, Any]) -> dict[str, Any]:
+        return self.runtime.run(job_id, model, params)
+
+
+@app.cls(
+    image=video_worker_image,
+    gpu=VIDEO_GPU_TYPE,
+    memory=VIDEO_MEMORY_MB,
+    min_containers=0,
+    max_containers=VIDEO_MAX_CONTAINERS,
+    scaledown_window=SCALEDOWN_WINDOW,
+    startup_timeout=STARTUP_TIMEOUT,
+    timeout=24 * 60 * 60,
+    volumes={str(DATA_ROOT): data_volume},
+    secrets=[modal.Secret.from_name("huggingface-secret", required_keys=["HF_TOKEN"])],
+)
+class WanGPVideoWorker:
+    @modal.enter()
+    def initialize(self) -> None:
+        self.runtime = WanGPRuntime(VIDEO_WANGP_PROFILE)
+        self.runtime.initialize()
 
     @modal.method()
-    def schema(self, model: str) -> dict[str, Any] | None:
-        data_volume.reload()
-        return self._session_for(model).get_model_schema(model)
+    def run(self, job_id: str, model: str, params: dict[str, Any]) -> dict[str, Any]:
+        return self.runtime.run(job_id, model, params)
 
 
 @app.function(
@@ -406,16 +648,104 @@ def api():
     from fastapi.responses import FileResponse
     from pydantic import BaseModel, ConfigDict, Field, ValidationError
     web = FastAPI(
-        title="WanGP REST API",
-        version="0.1.0",
-        description="Asynchronous REST transport for WanGP generation on Modal.",
+        title="WanGP and Fizgig REST API",
+        version="0.3.0",
+        description=(
+            "Asynchronous REST transport for WanGP generation and Fizgig "
+            "training on Modal."
+        ),
     )
     catalog = load_catalog()
 
     class JobRequest(BaseModel):
         model_config = ConfigDict(extra="forbid")
         model: str = Field(min_length=1)
+        kind: Literal["image", "video", "audio"] | None = None
         params: dict[str, Any] = Field(default_factory=dict)
+
+    async def _load_training_record(job_id: str) -> dict[str, Any]:
+        record = await training_job_store.get.aio(job_id)
+        if record is None:
+            raise HTTPException(
+                status_code=404,
+                detail="training job not found or expired",
+            )
+        internal = await fizgig_job_store.get.aio(job_id)
+        merged = merge_training_record(record, internal)
+        if merged != record:
+            await training_job_store.put.aio(job_id, merged)
+        return merged
+
+    async def _spawn_training_job(
+        request_body: dict[str, Any],
+        *,
+        allow_resume: bool = False,
+        resumed_from: str | None = None,
+    ) -> dict[str, Any]:
+        try:
+            request = validate_training_request(
+                request_body,
+                allow_resume=allow_resume,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        job_id = str(uuid.uuid4())
+        timestamp = utc_now()
+        record = {
+            "id": job_id,
+            "call_id": None,
+            "status": "queued",
+            "request": request,
+            "created_at": timestamp,
+            "updated_at": timestamp,
+        }
+        if resumed_from is not None:
+            record["resumed_from"] = resumed_from
+        internal_record = {
+            "id": job_id,
+            "status": "queued",
+            "created_at": timestamp,
+            "updated_at": timestamp,
+        }
+        await training_job_store.put.aio(job_id, record)
+        await fizgig_job_store.put.aio(job_id, internal_record)
+        try:
+            run_training = modal.Function.from_name(
+                FIZGIG_APP_NAME,
+                FIZGIG_RUN_FUNCTION,
+            )
+            call = await run_training.spawn.aio(job_id, request)
+        except Exception as exc:
+            failure_time = utc_now()
+            error = {
+                "message": str(exc),
+                "type": type(exc).__name__,
+                "stage": "dispatch",
+            }
+            record.update(
+                status="failed",
+                error=error,
+                completed_at=failure_time,
+                updated_at=failure_time,
+            )
+            internal_record.update(
+                status="failed",
+                error=error,
+                completed_at=failure_time,
+                updated_at=failure_time,
+            )
+            await training_job_store.put.aio(job_id, record)
+            await fizgig_job_store.put.aio(job_id, internal_record)
+            raise HTTPException(
+                status_code=503,
+                detail=f"Fizgig training app is unavailable: {exc}",
+            ) from exc
+
+        record["call_id"] = call.object_id
+        record["updated_at"] = utc_now()
+        await training_job_store.put.aio(job_id, record)
+        return record
 
     @web.get("/health")
     async def health():
@@ -424,9 +754,175 @@ def api():
             "ready": True,
             "gpu": GPU_TYPE,
             "max_gpu_containers": MAX_CONTAINERS,
+            "generation_workers": {
+                "image": {
+                    "gpu": IMAGE_GPU_TYPE,
+                    "max_containers": IMAGE_MAX_CONTAINERS,
+                    "memory_mb": IMAGE_MEMORY_MB,
+                    "wangp_profile": IMAGE_WANGP_PROFILE,
+                },
+                "video": {
+                    "gpu": VIDEO_GPU_TYPE,
+                    "max_containers": VIDEO_MAX_CONTAINERS,
+                    "memory_mb": VIDEO_MEMORY_MB,
+                    "wangp_profile": VIDEO_WANGP_PROFILE,
+                },
+            },
             "wangp_commit": WAN_COMMIT,
             "wan2ai_commit": WAN2AI_COMMIT,
+            "fizgig_app": FIZGIG_APP_NAME,
+            "training_families": list(SUPPORTED_TRAINING_FAMILIES),
         }
+
+    @web.post("/training/jobs", status_code=202)
+    async def submit_training_job(body: dict[str, Any]):
+        record = await _spawn_training_job(body)
+        return {"id": record["id"], "status": record["status"]}
+
+    @web.get("/training/jobs/{job_id}")
+    async def get_training_job(job_id: str):
+        record = await _load_training_record(job_id)
+        if record["status"] in {"queued", "running"} and record.get("call_id"):
+            call = modal.FunctionCall.from_id(record["call_id"])
+            try:
+                returned_record = await call.get.aio(timeout=0)
+            except TimeoutError:
+                pass
+            except modal.exception.OutputExpiredError as exc:
+                raise HTTPException(
+                    status_code=404,
+                    detail="training job result expired",
+                ) from exc
+            except Exception as exc:
+                # A worker-side failure normally writes its own record first.
+                # If startup failed before that happened, preserve the failure
+                # in the public and internal stores here.
+                record = await _load_training_record(job_id)
+                if record["status"] not in TRAINING_TERMINAL_STATUSES:
+                    timestamp = utc_now()
+                    error = {
+                        "message": str(exc),
+                        "type": type(exc).__name__,
+                        "stage": "modal",
+                    }
+                    record.update(
+                        status="failed",
+                        error=error,
+                        completed_at=timestamp,
+                        updated_at=timestamp,
+                    )
+                    internal = await fizgig_job_store.get.aio(job_id, {"id": job_id})
+                    internal.update(
+                        status="failed",
+                        error=error,
+                        completed_at=timestamp,
+                        updated_at=timestamp,
+                    )
+                    await fizgig_job_store.put.aio(job_id, internal)
+                    await training_job_store.put.aio(job_id, record)
+            else:
+                internal = await fizgig_job_store.get.aio(job_id)
+                record = merge_training_record(record, internal or returned_record)
+                await training_job_store.put.aio(job_id, record)
+        return public_training_record(record)
+
+    @web.post("/training/jobs/{job_id}/pause")
+    async def pause_training_job(job_id: str):
+        record = await _load_training_record(job_id)
+        if record["status"] != "running":
+            raise HTTPException(
+                status_code=409,
+                detail="only a running training job can be paused",
+            )
+        try:
+            request_pause = modal.Function.from_name(
+                FIZGIG_APP_NAME,
+                FIZGIG_PAUSE_FUNCTION,
+            )
+            internal = await request_pause.remote.aio(job_id)
+        except Exception as exc:
+            current = await _load_training_record(job_id)
+            if current["status"] != "running":
+                raise HTTPException(
+                    status_code=409,
+                    detail="training job is no longer running",
+                ) from exc
+            raise HTTPException(
+                status_code=503,
+                detail=f"Fizgig pause operation is unavailable: {exc}",
+            ) from exc
+        record = merge_training_record(record, internal)
+        await training_job_store.put.aio(job_id, record)
+        return public_training_record(record)
+
+    @web.post("/training/jobs/{job_id}/resume", status_code=202)
+    async def resume_training_job(job_id: str):
+        record = await _load_training_record(job_id)
+        result = record.get("result") or {}
+        if record["status"] != "succeeded" or not result.get("paused"):
+            raise HTTPException(
+                status_code=409,
+                detail="only a successfully paused training job can be resumed",
+            )
+        request = dict(record["request"])
+        request["resume_from"] = result.get("resume_from") or "latest"
+        resumed = await _spawn_training_job(
+            request,
+            allow_resume=True,
+            resumed_from=job_id,
+        )
+        return {
+            "id": resumed["id"],
+            "status": resumed["status"],
+            "resumed_from": job_id,
+        }
+
+    @web.post("/training/jobs/{job_id}/cancel")
+    async def cancel_training_job(job_id: str):
+        record = await _load_training_record(job_id)
+        if record["status"] == "cancelled":
+            return public_training_record(record)
+        if record["status"] in {"succeeded", "failed"}:
+            raise HTTPException(
+                status_code=409,
+                detail="training job is already terminal",
+            )
+        if record.get("call_id"):
+            try:
+                call = modal.FunctionCall.from_id(record["call_id"])
+                await call.cancel.aio(terminate_containers=True)
+            except Exception as exc:
+                current = await _load_training_record(job_id)
+                if current["status"] in TRAINING_TERMINAL_STATUSES:
+                    return public_training_record(current)
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"training cancellation is unavailable: {exc}",
+                ) from exc
+
+            # Completion can win the race with cancellation. Never overwrite a
+            # worker-authored successful or failed terminal record in that case.
+            internal = await fizgig_job_store.get.aio(job_id)
+            if internal and internal.get("status") in {"succeeded", "failed"}:
+                record = merge_training_record(record, internal)
+                await training_job_store.put.aio(job_id, record)
+                return public_training_record(record)
+
+        timestamp = utc_now()
+        record.update(
+            status="cancelled",
+            completed_at=timestamp,
+            updated_at=timestamp,
+        )
+        internal = await fizgig_job_store.get.aio(job_id, {"id": job_id})
+        internal.update(
+            status="cancelled",
+            completed_at=timestamp,
+            updated_at=timestamp,
+        )
+        await fizgig_job_store.put.aio(job_id, internal)
+        await training_job_store.put.aio(job_id, record)
+        return public_training_record(record)
 
     @web.post("/jobs", status_code=202)
     async def submit_job(body: dict[str, Any]):
@@ -435,8 +931,15 @@ def api():
         except ValidationError as exc:
             raise HTTPException(status_code=422, detail=exc.errors()) from exc
         try:
-            validate_job_request(request.model, request.params)
+            model = request.model.strip()
+            validate_job_request(model, request.params)
             validate_data_paths(request.params)
+            kind = resolve_generation_kind(
+                catalog,
+                model,
+                request.kind,
+                request.params,
+            )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -445,20 +948,22 @@ def api():
             "id": job_id,
             "call_id": None,
             "status": "queued",
-            "model": request.model.strip(),
+            "kind": kind,
+            "model": model,
             "created_at": utc_now(),
             "updated_at": utc_now(),
         }
         await job_store.put.aio(job_id, record)
-        call = await WanGPWorker().run.spawn.aio(
+        worker = WanGPVideoWorker if kind == "video" else WanGPImageWorker
+        call = await worker().run.spawn.aio(
             job_id,
-            request.model.strip(),
+            model,
             request.params,
         )
         current = await job_store.get.aio(job_id, record)
         current["call_id"] = call.object_id
         await job_store.put.aio(job_id, current)
-        return {"id": job_id, "status": "queued"}
+        return {"id": job_id, "status": "queued", "kind": kind}
 
     @web.get("/jobs/{job_id}")
     async def get_job(job_id: str):

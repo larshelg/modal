@@ -1,0 +1,15 @@
+{
+  "video_url": "s3://studio-bucket/path/to/input.mp4",
+  "tracking_url": "s3://studio-bucket/path/to/coordinates.json",
+  "output_prefix": "s3://studio-bucket/path/to/job-123/",
+  "green_hsv": {
+    "lower": [35, 50, 40],
+    "upper": [95, 255, 255]
+  },
+  "soft_chroma": {
+    "mode": "disabled",
+    "radius_px": 3,
+    "hsv_ramp": [8, 40, 40]
+  },
+  "debug_frames": [0, 42, 87]
+}

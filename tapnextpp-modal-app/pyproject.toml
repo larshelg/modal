@@ -1,0 +1,21 @@
+[project]
+name = "tapnextpp-modal-app"
+version = "0.1.0"
+description = "Pinned TAPNext++ S3-native homography tracking stage."
+requires-python = ">=3.11"
+dependencies = [
+    "boto3>=1.40,<2",
+    "imageio[ffmpeg]>=2.37,<3",
+    "modal>=1.5,<2",
+    "numpy>=2,<3",
+    "opencv-python-headless>=4.12,<5",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4,<9",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

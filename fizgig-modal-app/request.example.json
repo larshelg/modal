@@ -1,0 +1,7 @@
+{
+  "family": "krea2",
+  "dataset": "linda",
+  "output_name": "linda_krea2_v1",
+  "preset": "krea2_defaults",
+  "trigger_word": "linda"
+}

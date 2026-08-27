@@ -1,7 +1,7 @@
 [project]
-name = "rest-wangpt-modal-app"
-version = "0.3.0"
-description = "Asynchronous WanGP generation and Fizgig training REST API on Modal."
+name = "studio-processing-rest-modal-app"
+version = "1.0.0"
+description = "Authenticated sequential TAPNext++ and SAM REST gateway on Modal."
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.116,<1",
@@ -11,6 +11,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "httpx>=0.28,<1",
     "pytest>=8.4,<9",
 ]
 

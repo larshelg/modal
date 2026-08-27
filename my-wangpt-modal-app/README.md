@@ -77,6 +77,6 @@ them without storing either secret in the repository. In Cursor, open
 - App name: `wangp-mcp`
 - GPU: `L40S` (override locally with `WANGP_GPU` before deployment)
 - Maximum containers: 1
-- Idle scale-down: 5 minutes after the last HTTP request finishes
+- Idle scale-down: 20 minutes after the last HTTP request finishes
 - Server startup timeout: 30 minutes
 - MCP transport: streamable HTTP on port 8000

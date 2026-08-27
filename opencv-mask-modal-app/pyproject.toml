@@ -1,0 +1,20 @@
+[project]
+name = "opencv-mask-modal-app"
+version = "0.1.0"
+description = "TAPNext-guided OpenCV green-screen replacement masks on Modal."
+requires-python = ">=3.12"
+dependencies = [
+    "boto3>=1.40,<2",
+    "modal>=1.5,<2",
+    "numpy>=1.26,<3",
+    "opencv-python-headless>=4.10,<5",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4,<9",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

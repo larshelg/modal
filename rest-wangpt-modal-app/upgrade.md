@@ -71,7 +71,7 @@ Add provenance to the existing payload:
 {
   "metadata": {
     "catalog_version": 1,
-    "wangp_commit": "a042474d477a741d6b9b60fc6ff304077113cb25",
+    "wangp_commit": "92f56e5ee7227d490f6d85281c019e4c4e2dc393",
     "wan2ai_commit": "2539c3a87b64fa0f619695f02410fc92c63cba7d",
     "profile": 4,
     "attention": "sdpa"
