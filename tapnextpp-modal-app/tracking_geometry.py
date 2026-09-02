@@ -12,8 +12,19 @@ import numpy as np
 
 
 PLANE_QUERY_COUNT = 32
+DEFAULT_QUERY_LAYOUT = "perimeter-32"
+HYBRID_QUERY_LAYOUT = "hybrid-24-edge-8-interior"
+ADDITIVE_QUERY_LAYOUT = "perimeter-32-plus-interior-8"
+QUERY_LAYOUT_PLANE_COUNTS = {
+    DEFAULT_QUERY_LAYOUT: 32,
+    HYBRID_QUERY_LAYOUT: 32,
+    ADDITIVE_QUERY_LAYOUT: 40,
+}
 CORNER_NAMES = ("tl", "tr", "br", "bl")
 MAX_TAIL_PREDICTION_FRAMES = 24
+OVERVIEW_SHEET_FRAME_COUNT = 30
+OVERVIEW_SHEET_COLUMNS = 6
+OVERVIEW_TILE_SIZE = (256, 224)
 
 
 @dataclass
@@ -56,11 +67,27 @@ def homography_between(source: np.ndarray, destination: np.ndarray) -> np.ndarra
     return result
 
 
+def plane_query_count(query_layout: str) -> int:
+    """Return the number of RANSAC plane queries before QA V2 corner probes."""
+    try:
+        return QUERY_LAYOUT_PLANE_COUNTS[query_layout]
+    except KeyError:
+        raise ValueError(f"unsupported query layout: {query_layout}") from None
+
+
 def seed_queries(
     corners: list[list[float]], source_width: int, source_height: int,
     analysis_width: int, analysis_height: int, inset: float = 6.0,
     include_corner_probes: bool = False,
+    query_layout: str = DEFAULT_QUERY_LAYOUT,
 ) -> tuple[list[list[float]], np.ndarray]:
+    """Seed the selected plane-query layout and optional QA V2 probes.
+
+    The historical perimeter layout remains the default. The hybrid layout is
+    deliberately opt-in: it trades one quarter of the correlated edge points
+    for an interior 4x2 lattice. The additive layout preserves all 32 original
+    perimeter points and appends the same eight interior points.
+    """
     source = np.asarray(corners, dtype=np.float64)
     analysis = source * np.array(
         [analysis_width / source_width, analysis_height / source_height],
@@ -70,15 +97,42 @@ def seed_queries(
         raise ValueError("screen corners must be convex and consistently ordered")
     centroid = np.mean(analysis, axis=0)
     points: list[np.ndarray] = []
+    expected_plane_points = plane_query_count(query_layout)
+    points_per_edge = 6 if query_layout == HYBRID_QUERY_LAYOUT else 8
     for edge in range(4):
         start, end = analysis[edge], analysis[(edge + 1) % 4]
-        for step in range(8):
-            point = start + (end - start) * (step / 8)
+        for step in range(points_per_edge):
+            point = start + (end - start) * (step / points_per_edge)
             inward = centroid - point
             distance = float(np.linalg.norm(inward))
             if distance <= inset:
                 raise ValueError("screen quadrilateral is too small for query inset")
             points.append(point + inward * (inset / distance))
+    if query_layout in {HYBRID_QUERY_LAYOUT, ADDITIVE_QUERY_LAYOUT}:
+        # Project a normalized 4x2 lattice through the actual screen quad.
+        # Projective placement keeps the interior distribution meaningful on
+        # a perspective-skewed TV instead of treating its bounding box as flat.
+        unit_corners = np.asarray(
+            [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            dtype=np.float32,
+        )
+        normalized_interior = np.asarray(
+            [
+                [u, v]
+                for v in (1.0 / 3.0, 2.0 / 3.0)
+                for u in (0.2, 0.4, 0.6, 0.8)
+            ],
+            dtype=np.float32,
+        )
+        matrix = cv2.getPerspectiveTransform(
+            unit_corners, analysis.astype(np.float32)
+        )
+        interior = cv2.perspectiveTransform(
+            normalized_interior.reshape(1, -1, 2), matrix
+        )[0].astype(np.float64)
+        points.extend(interior)
+    if len(points) != expected_plane_points:
+        raise RuntimeError("query layout produced the wrong plane-point count")
     queries = [[0, float(p[0]), float(p[1])] for p in points]
     if include_corner_probes:
         queries.extend([[0, float(p[0]), float(p[1])] for p in analysis])
@@ -445,10 +499,13 @@ def build_geometry(
     analysis = parameters["analysis"]
     frame_count = int(expected["frames"])
     qa_version = int(parameters.get("qaVersion", 1))
+    query_layout = parameters.get("queryLayout", DEFAULT_QUERY_LAYOUT)
+    plane_count = plane_query_count(query_layout)
     queries, reference_corners = seed_queries(
         parameters["frameZeroCorners"], expected["width"], expected["height"],
         analysis["width"], analysis["height"],
         include_corner_probes=qa_version == 2,
+        query_layout=query_layout,
     )
     if (
         tracks.shape != (frame_count, len(queries), 2)
@@ -457,8 +514,8 @@ def build_geometry(
     ):
         raise ValueError("tracker output dimensions do not match expectedMedia.frames")
     raw = estimate_raw_frames(
-        np.asarray([query[1:] for query in queries[:PLANE_QUERY_COUNT]]),
-        tracks[:, :PLANE_QUERY_COUNT], visibility[:, :PLANE_QUERY_COUNT],
+        np.asarray([query[1:] for query in queries[:plane_count]]),
+        tracks[:, :plane_count], visibility[:, :plane_count],
         reference_corners, analysis["width"], analysis["height"],
         parameters["maxReferenceAreaRatio"],
     )
@@ -466,8 +523,8 @@ def build_geometry(
     if qa_version == 2:
         stable, resolution_details = resolve_offscreen_v2(
             raw,
-            tracks[:, PLANE_QUERY_COUNT:],
-            visibility[:, PLANE_QUERY_COUNT:],
+            tracks[:, plane_count:],
+            visibility[:, plane_count:],
             reference_corners,
             analysis["width"],
             analysis["height"],
@@ -517,7 +574,7 @@ def build_geometry(
         "source": {"width": expected["width"], "height": expected["height"], "fps": expected["fps"]},
         "analysis": analysis, "surface": surface,
         "reference": {"sourceCorners": parameters["frameZeroCorners"], "analysisCorners": reference_corners.tolist(), "canonicalCorners": canonical.tolist()},
-        "settings": {"points": len(queries), "ransacThreshold": 3.0, "minimumInliers": 8, "minimumInlierRatio": 0.60, "maximumReferenceAreaRatio": parameters["maxReferenceAreaRatio"], "medianWindow": 5, "emaAlpha": 0.25, "fallback": "coherent-offscreen-v2" if qa_version == 2 else "interpolate-valid-frames"},
+        "settings": {"points": len(queries), "planePoints": plane_count, "queryLayout": query_layout, "ransacThreshold": 3.0, "minimumInliers": 8, "minimumInlierRatio": 0.60, "maximumReferenceAreaRatio": parameters["maxReferenceAreaRatio"], "medianWindow": 5, "emaAlpha": 0.25, "fallback": "coherent-offscreen-v2" if qa_version == 2 else "interpolate-valid-frames"},
         "summary": {"frameCount": frame_count, "goodFrames": frame_count - len(recovered), "recoveredFrames": recovered},
         "frames": frames,
     }
@@ -678,29 +735,48 @@ def render_review_artifacts(
     output_dir.mkdir(parents=True, exist_ok=True)
     scale = np.array([frames.shape[2] / analysis["width"], frames.shape[1] / analysis["height"]])
     stable = stable_analysis * scale
-    annotated = []
+    annotated = np.empty_like(frames[:, :, :, :3])
     for index, frame in enumerate(frames):
         detail = frame_details[index] if frame_details is not None else None
-        label = detail.get("resolutionSource", "direct") if detail else "direct"
+        resolution_label = (
+            detail.get("resolutionSource", "direct") if detail else "direct"
+        )
+        chroma_label = detail.get("chromaTailSource") if detail else None
+        label = (
+            chroma_label
+            if chroma_label in {"tailBlend", "chromaTail"}
+            else resolution_label
+        )
         image = annotate(frame[:, :, :3], stable[index], index, label)
         if detail and (
             int(detail.get("offscreenCornerCount", 0)) > 0
-            or label != "direct"
+            or resolution_label != "direct"
         ):
             image = _draw_offscreen_locator(image, stable[index])
-        annotated.append(image)
+        annotated[index] = image
 
     import imageio.v3 as iio
     review_video = output_dir / "tracking-review.mp4"
-    iio.imwrite(review_video, np.asarray(annotated), fps=24, codec="libx264", pixelformat="yuv420p")
+    iio.imwrite(review_video, annotated, fps=24, codec="libx264", pixelformat="yuv420p")
     sheets: list[Path] = []
-    for start in (0, 30, 60, 90):
-        tiles = []
-        for frame in annotated[start:start + 30]:
-            tiles.append(cv2.resize(frame, (256, 224), interpolation=cv2.INTER_AREA))
-        rows = [np.hstack(tiles[row:row + 6]) for row in range(0, 30, 6)]
+    tile_width, tile_height = OVERVIEW_TILE_SIZE
+    blank_tile = np.zeros((tile_height, tile_width, 3), dtype=np.uint8)
+    for start in range(0, len(annotated), OVERVIEW_SHEET_FRAME_COUNT):
+        end = min(start + OVERVIEW_SHEET_FRAME_COUNT, len(annotated))
+        tiles = [
+            cv2.resize(frame, OVERVIEW_TILE_SIZE, interpolation=cv2.INTER_AREA)
+            for frame in annotated[start:end]
+        ]
+        tiles.extend(
+            blank_tile.copy()
+            for _ in range(OVERVIEW_SHEET_FRAME_COUNT - len(tiles))
+        )
+        rows = [
+            np.hstack(tiles[row:row + OVERVIEW_SHEET_COLUMNS])
+            for row in range(0, OVERVIEW_SHEET_FRAME_COUNT, OVERVIEW_SHEET_COLUMNS)
+        ]
         sheet = np.vstack(rows)
-        path = output_dir / f"overview-{start:03d}-{start + 29:03d}.jpg"
+        path = output_dir / f"overview-{start:03d}-{end - 1:03d}.jpg"
         if not cv2.imwrite(
             str(path), cv2.cvtColor(sheet, cv2.COLOR_RGB2BGR),
             [cv2.IMWRITE_JPEG_QUALITY, 90],

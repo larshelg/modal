@@ -7,6 +7,8 @@ import numpy as np
 import pytest
 
 from tracking_geometry import (
+    ADDITIVE_QUERY_LAYOUT,
+    HYBRID_QUERY_LAYOUT,
     MAX_TAIL_PREDICTION_FRAMES,
     PLANE_QUERY_COUNT,
     build_geometry,
@@ -26,7 +28,7 @@ VIDEO_HASH = hashlib.sha256(b"video").hexdigest()
 
 
 def valid_stage_request(**changes):
-    run_id = "natural-20260823-120000"
+    run_id = "run_20260830_greenscreen"
     request = {
         "schemaVersion": 1,
         "runId": run_id,
@@ -36,7 +38,7 @@ def valid_stage_request(**changes):
             "normalizedVideo": {
                 "storage": "s3",
                 "bucket": "bucket",
-                "key": f"studio-experiments/{run_id}/h3/hash/normalized.mp4",
+                "key": f"runs/{run_id}/video/{VIDEO_HASH}/normalized.mp4",
                 "sha256": VIDEO_HASH,
                 "sizeBytes": 5,
                 "contentType": "video/mp4",
@@ -53,17 +55,26 @@ def valid_stage_request(**changes):
         "expectedMedia": {"frames": 120, "fps": "24/1", "width": 100, "height": 100},
         "output": {
             "bucket": "bucket",
-            "prefix": f"studio-experiments/{run_id}/tracking/{HASH}/",
+            "prefix": f"runs/{run_id}/tracking/{HASH}/",
         },
     }
     request.update(changes)
     return request
 
 
+def test_stage_request_accepts_custom_tracking_subdirectory():
+    request = valid_stage_request()
+    request["output"]["prefix"] = "runs/run_20260830_greenscreen/tracking/custom-layout/"
+    checked = validate_stage_request(request, "bucket")
+    assert checked["output"]["prefix"].endswith("custom-layout/")
+
+
 def test_stage_request_accepts_exact_contract():
     request = validate_stage_request(valid_stage_request(), "bucket")
     assert request["expectedMedia"] == {"frames": 120, "fps": "24/1", "width": 100, "height": 100}
     assert request["parameters"]["evidenceMode"] == "full"
+    assert request["parameters"]["chromaTailRecovery"]["enabled"] is False
+    assert request["parameters"]["queryLayout"] == "perimeter-32"
 
 
 def test_stage_request_accepts_evidence_free_mode():
@@ -80,6 +91,58 @@ def test_stage_request_accepts_offscreen_geometry_v2():
     assert checked["parameters"]["qaVersion"] == 2
 
 
+def test_stage_request_accepts_hybrid_query_layout():
+    request = valid_stage_request()
+    request["parameters"]["queryLayout"] = HYBRID_QUERY_LAYOUT
+    checked = validate_stage_request(request, "bucket")
+    assert checked["parameters"]["queryLayout"] == HYBRID_QUERY_LAYOUT
+
+
+def test_stage_request_accepts_additive_40_point_query_layout():
+    request = valid_stage_request()
+    request["parameters"]["queryLayout"] = ADDITIVE_QUERY_LAYOUT
+    checked = validate_stage_request(request, "bucket")
+    assert checked["parameters"]["queryLayout"] == ADDITIVE_QUERY_LAYOUT
+
+
+def test_stage_request_accepts_explicit_chroma_tail_recovery():
+    request = valid_stage_request()
+    request["parameters"]["qaVersion"] = 2
+    request["parameters"]["chromaTailRecovery"] = {
+        "enabled": True,
+        "minimumTailFrames": 16,
+        "acquisitionFrames": 4,
+    }
+    checked = validate_stage_request(request, "bucket")
+    assert checked["parameters"]["chromaTailRecovery"] == {
+        "enabled": True,
+        "minimumTailFrames": 16,
+        "acquisitionFrames": 4,
+        "scoreMargin": 0.04,
+        "minimumScore": 0.90,
+        "minimumPrecision": 0.95,
+        "transitionFrames": 6,
+    }
+
+
+def test_stage_request_rejects_chroma_tail_recovery_on_qa_v1():
+    request = valid_stage_request()
+    request["parameters"]["chromaTailRecovery"] = {"enabled": True}
+    with pytest.raises(ValueError, match="requires qaVersion 2"):
+        validate_stage_request(request, "bucket")
+
+
+def test_stage_request_rejects_unknown_chroma_tail_setting():
+    request = valid_stage_request()
+    request["parameters"]["qaVersion"] = 2
+    request["parameters"]["chromaTailRecovery"] = {
+        "enabled": True,
+        "useRawCandidates": True,
+    }
+    with pytest.raises(ValueError, match="unsupported fields"):
+        validate_stage_request(request, "bucket")
+
+
 def test_stage_request_accepts_eight_second_media():
     request = valid_stage_request()
     request["expectedMedia"]["frames"] = 192
@@ -87,16 +150,25 @@ def test_stage_request_accepts_eight_second_media():
     assert checked["expectedMedia"]["frames"] == 192
 
 
+def test_stage_request_accepts_thirty_second_media():
+    request = valid_stage_request()
+    request["expectedMedia"]["frames"] = 720
+    checked = validate_stage_request(request, "bucket")
+    assert checked["expectedMedia"]["frames"] == 720
+
+
 @pytest.mark.parametrize(
     ("mutate", "message"),
     [
         (lambda r: r.update(stage="sam"), "stage"),
         (lambda r: r["expectedMedia"].update(frames=0), "positive integer"),
-        (lambda r: r["output"].update(prefix="studio-experiments/other/"), "output.prefix"),
+        (lambda r: r["expectedMedia"].update(frames=721), "must not exceed 720"),
+        (lambda r: r["output"].update(prefix="runs/other-run/tracking/hash/"), "output.prefix"),
         (lambda r: r["inputs"]["normalizedVideo"].update(key="../video.mp4"), "key"),
         (lambda r: r["parameters"].update(frameZeroCorners=[[10, 10], [90, 90], [90, 10], [10, 90]]), "convex"),
         (lambda r: r["parameters"].update(evidenceMode="brief"), "evidenceMode"),
         (lambda r: r["parameters"].update(qaVersion=3), "qaVersion"),
+        (lambda r: r["parameters"].update(queryLayout="grid-32"), "queryLayout"),
     ],
 )
 def test_stage_request_rejects_mismatched_or_unsafe_inputs(mutate, message):
@@ -198,6 +270,90 @@ def synthetic_tracking_v2(offsets=None):
         "model": {"name": "fixture"},
     }
     return result, parameters, expected
+
+
+def test_hybrid_layout_has_24_edge_and_8_projected_interior_queries():
+    queries, corners = seed_queries(
+        [[10, 10], [90, 10], [90, 90], [10, 90]],
+        100,
+        100,
+        100,
+        100,
+        include_corner_probes=True,
+        query_layout=HYBRID_QUERY_LAYOUT,
+    )
+
+    assert len(queries) == 36
+    assert np.allclose(np.asarray(queries[-4:])[:, 1:], corners)
+    interior = np.asarray(queries[24:32])[:, 1:]
+    assert np.allclose(
+        interior,
+        [
+            [26, 36.666667], [42, 36.666667],
+            [58, 36.666667], [74, 36.666667],
+            [26, 63.333333], [42, 63.333333],
+            [58, 63.333333], [74, 63.333333],
+        ],
+        atol=1e-5,
+    )
+
+
+def test_additive_layout_preserves_all_32_perimeter_queries_then_adds_interior():
+    corners = [[10, 10], [90, 10], [90, 90], [10, 90]]
+    perimeter, _ = seed_queries(corners, 100, 100, 100, 100)
+    additive, reference = seed_queries(
+        corners,
+        100,
+        100,
+        100,
+        100,
+        include_corner_probes=True,
+        query_layout=ADDITIVE_QUERY_LAYOUT,
+    )
+    hybrid, _ = seed_queries(
+        corners,
+        100,
+        100,
+        100,
+        100,
+        query_layout=HYBRID_QUERY_LAYOUT,
+    )
+
+    assert len(additive) == 44
+    assert additive[:32] == perimeter
+    assert np.allclose(additive[32:40], hybrid[24:32])
+    assert np.allclose(np.asarray(additive[40:])[:, 1:], reference)
+
+
+def test_geometry_slices_40_plane_queries_before_four_v2_corner_probes():
+    parameters = valid_stage_request()["parameters"]
+    parameters["qaVersion"] = 2
+    parameters["queryLayout"] = ADDITIVE_QUERY_LAYOUT
+    expected = valid_stage_request()["expectedMedia"]
+    queries, _ = seed_queries(
+        parameters["frameZeroCorners"],
+        100,
+        100,
+        100,
+        100,
+        include_corner_probes=True,
+        query_layout=ADDITIVE_QUERY_LAYOUT,
+    )
+    reference = np.asarray([query[1:] for query in queries], dtype=np.float64)
+    tracks = np.repeat(reference[None, :, :], expected["frames"], axis=0)
+    result = {
+        "tracks": tracks.tolist(),
+        "visibility": np.ones(tracks.shape[:2], dtype=bool).tolist(),
+        "model": {"name": "fixture"},
+    }
+
+    coordinates, metrics, _, stable = build_geometry(result, parameters, expected)
+
+    assert coordinates["settings"]["queryLayout"] == ADDITIVE_QUERY_LAYOUT
+    assert coordinates["settings"]["planePoints"] == 40
+    assert coordinates["settings"]["points"] == 44
+    assert metrics["directGood"] == 120
+    assert stable.shape == (120, 4, 2)
 
 
 def test_geometry_has_exact_frame_contract_and_finite_homographies():
@@ -368,3 +524,35 @@ def test_review_sheets_cover_all_frames_and_suspects_are_annotated(tmp_path):
     ]
     assert all(path.stat().st_size > 0 for path in sheets)
     assert set(suspect_paths) == {suspect["frame"] for suspect in suspects}
+
+
+def test_review_sheets_cover_more_than_120_frames_and_pad_final_sheet(tmp_path):
+    frame_count = 243
+    frames = np.zeros((frame_count, 100, 100, 3), dtype=np.uint8)
+    corners = np.asarray(
+        [[10, 10], [90, 10], [90, 90], [10, 90]], dtype=np.float64
+    )
+    stable = np.repeat(corners[None, :, :], frame_count, axis=0)
+
+    video, sheets, suspect_paths = render_review_artifacts(
+        frames,
+        stable,
+        {"width": 100, "height": 100},
+        [],
+        tmp_path,
+    )
+
+    assert video.stat().st_size > 0
+    assert [path.name for path in sheets] == [
+        "overview-000-029.jpg",
+        "overview-030-059.jpg",
+        "overview-060-089.jpg",
+        "overview-090-119.jpg",
+        "overview-120-149.jpg",
+        "overview-150-179.jpg",
+        "overview-180-209.jpg",
+        "overview-210-239.jpg",
+        "overview-240-242.jpg",
+    ]
+    assert all(path.stat().st_size > 0 for path in sheets)
+    assert suspect_paths == {}

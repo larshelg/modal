@@ -611,3 +611,6 @@ not a simple resize.
 - [Spatial upsampler configuration](https://github.com/deepbeepmeep/Wan2GP/blob/92f56e5ee7227d490f6d85281c019e4c4e2dc393/docs/SPATIAL_UPSAMPLERS.md)
 - [FlashVSR bridge and supported scales](https://github.com/deepbeepmeep/Wan2GP/blob/92f56e5ee7227d490f6d85281c019e4c4e2dc393/postprocessing/flashvsr/wgp_bridge.py)
 - [WanGP extension configuration migration](https://github.com/deepbeepmeep/Wan2GP/blob/92f56e5ee7227d490f6d85281c019e4c4e2dc393/shared/utils/wgp_config_migration.py)
+
+
+Example: 

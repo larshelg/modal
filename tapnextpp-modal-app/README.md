@@ -5,6 +5,9 @@ This standalone Modal app exposes one public workflow entrypoint.
 constructs and stabilizes screen homographies, creates review evidence, uploads
 durable artifacts, and writes `result.json` last.
 
+See [`architecture.md`](architecture.md) for the end-to-end tracking,
+off-screen recovery, and optional `chromaTailRecovery` design.
+
 ## Runtime
 
 - App: `tapnextpp-modal-app`
@@ -85,8 +88,11 @@ Before allocating the GPU worker, the coordinator validates all request relation
 a `.part` file under `/tmp`, verifies byte size and SHA-256, atomically renames
 the input, decodes it, and checks the exact media contract. It uploads
 coordinates, full metrics, and per-attempt debug records. With
-`evidenceMode: full` it also uploads the review video, four overview sheets,
-and annotated suspects. `evidenceMode: none` skips all review rendering and
+`evidenceMode: full` it also uploads the review video, one overview sheet for
+each consecutive block of up to 30 frames, and annotated suspects. The final
+sheet is padded when the frame count is not a multiple of 30. The deployed
+worker accepts up to 720 frames (30 seconds at 24 fps). `evidenceMode: none`
+skips all review rendering and
 returns an empty suspects list while preserving identical tracking geometry
 and metrics. Every upload is HEAD-verified against size and SHA-256 metadata.
 `result.json` is the last upload and commit marker.
@@ -94,6 +100,13 @@ and metrics. Every upload is HEAD-verified against size and SHA-256 metadata.
 The compact Modal return value is the same StageResult stored in `result.json`;
 video bytes, images, and raw point tracks are never returned from the S3-native
 entrypoint.
+
+The tracking-point layout defaults to `parameters.queryLayout: perimeter-32`.
+`hybrid-24-edge-8-interior` is accepted only for controlled experiments; it
+performed worse on the uniform-green pan clip and is not recommended as a
+production replacement. `perimeter-32-plus-interior-8` preserves all original
+edge queries and appends eight interior queries, but it also performed worse
+and remains experimental.
 
 ## Off-screen geometry V2
 
@@ -122,6 +135,48 @@ The private GPU function independently repeats request and input verification
 in its own `/tmp/tapnextpp-gpu-*` directory before model inference. It returns
 raw tracks only to the coordinator inside Modal; those tracks never cross the
 external stage boundary or become durable S3 artifacts.
+
+## Opt-in terminal chroma recovery
+
+Experiment 1's simplified repair is available as an explicit QA V2 request
+option. It is disabled by default, so existing requests retain baseline
+selection behavior. Enable the validated policy with:
+
+```json
+{
+  "parameters": {
+    "qaVersion": 2,
+    "chromaTailRecovery": {
+      "enabled": true,
+      "minimumTailFrames": 12,
+      "acquisitionFrames": 3,
+      "scoreMargin": 0.04,
+      "minimumScore": 0.90,
+      "minimumPrecision": 0.95,
+      "transitionFrames": 6
+    }
+  }
+}
+```
+
+The CPU coordinator calibrates the bezel-to-green inset from trustworthy
+direct frames. It then evaluates a calibrated chroma projection using all four
+edges, coherent-transform, and temporal gates. The projection can replace
+geometry only for a non-direct run that reaches the end of the clip, lasts at
+least `minimumTailFrames`, and wins for `acquisitionFrames` consecutive
+frames. After confirmation, strong chroma support must remain continuous to
+the final frame; destructive presenter occlusion therefore causes an explicit
+abstention. Raw tracker candidates are never used by this repair.
+
+Because processing is offline, the smoothstep transition may start on earlier
+frames whose chroma evidence was already accepted. This removes a visible
+hand-off without importing rejected evidence. `coordinates.json` records the
+calibration, decision, per-frame evidence, source, and blend weight.
+`metrics.json` records whether the policy applied and the relevant tail frame
+numbers. Published motion metrics and suspect ranking are recomputed from the
+final geometry. A parameter fingerprint prevents a baseline-only committed
+result from satisfying a later opt-in request for the same video/output
+prefix.
 
 ## Private inference boundary
 

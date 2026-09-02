@@ -7,17 +7,49 @@ from app import (
     FIZGIG_JOB_DICT_NAME,
     JOB_DICT_NAME,
     TRAINING_JOB_DICT_NAME,
+    JobCallbacks,
     canonical_output_path,
     filter_models,
     merge_training_record,
     normalized_absolute_path,
     public_training_record,
+    remove_local_outputs,
     resolve_generation_kind,
+    s3_settings_from_env,
     serialize_result,
+    upload_output_artifacts,
     validate_data_paths,
     validate_job_request,
     validate_training_request,
 )
+
+
+def test_job_callbacks_cancel_load_trace_on_first_progress_only(monkeypatch):
+    records = {"job": {"id": "job", "status": "running"}}
+
+    class Store:
+        def get(self, key, default=None):
+            return records.get(key, default)
+
+        def put(self, key, value):
+            records[key] = value
+
+    monkeypatch.setattr("app.job_store", Store())
+    calls = []
+    callbacks = JobCallbacks("job", on_first_progress=lambda: calls.append("cancel"))
+    progress = SimpleNamespace(
+        phase="inference",
+        status="Denoising",
+        progress=25,
+        current_step=1,
+        total_steps=20,
+    )
+
+    callbacks.on_progress(progress)
+    callbacks.on_progress(progress)
+
+    assert calls == ["cancel"]
+    assert records["job"]["progress"]["phase"] == "inference"
 
 
 def test_request_overlays_model_type():
@@ -55,18 +87,17 @@ def test_normalized_path_does_not_resolve_volume_mount_symlinks(tmp_path: Path):
     assert str(path).startswith(str(mounted))
 
 
-def test_canonical_output_path_maps_modal_internal_mount():
-    assert canonical_output_path(
-        "/__modal/volumes/vo-example/outputs/nested/image.png"
-    ) == Path("/data/outputs/nested/image.png")
+def test_canonical_output_path_rejects_modal_volume_output():
+    with pytest.raises(ValueError, match="not under"):
+        canonical_output_path("/__modal/volumes/vo-example/outputs/image.png")
 
 
 def test_result_is_metadata_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    output_dir = tmp_path / "outputs"
+    output_dir = tmp_path / "wangp-outputs"
     output_dir.mkdir()
     output = output_dir / "out.png"
     output.write_bytes(b"png")
-    monkeypatch.setattr("app.DATA_ROOT", tmp_path)
+    monkeypatch.setattr("app.GENERATED_OUTPUT_ROOT", output_dir)
     result = SimpleNamespace(
         success=True,
         generated_files=[str(output)],
@@ -76,11 +107,14 @@ def test_result_is_metadata_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
         errors=[],
     )
     metadata = {
-        "id": "output-id",
+        "storage": "s3",
+        "bucket": "bucket",
+        "key": "runninghub/wangp/job/000-out.png",
+        "uri": "s3://bucket/runninghub/wangp/job/000-out.png",
         "filename": "out.png",
         "size_bytes": 3,
         "media_type": "image/png",
-        "url": "/outputs/output-id",
+        "sha256": "digest",
     }
     assert serialize_result(result, [metadata]) == {
         "success": True,
@@ -93,11 +127,11 @@ def test_result_is_metadata_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 
 
 def test_serialize_output_hides_internal_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    output_dir = tmp_path / "outputs"
+    output_dir = tmp_path / "wangp-outputs"
     output_dir.mkdir()
     output = output_dir / "clip.mp4"
     output.write_bytes(b"video")
-    monkeypatch.setattr("app.DATA_ROOT", tmp_path)
+    monkeypatch.setattr("app.GENERATED_OUTPUT_ROOT", output_dir)
 
     from app import serialize_output
 
@@ -106,6 +140,73 @@ def test_serialize_output_hides_internal_path(tmp_path: Path, monkeypatch: pytes
         "size_bytes": 5,
         "media_type": "video/mp4",
     }
+
+
+def test_s3_settings_require_all_keys_without_exposing_values():
+    values = {
+        "S3_ACCESS_KEY_ID": "id",
+        "S3_SECRET_ACCESS_KEY": "do-not-print",
+        "S3_ENDPOINT": "https://s3.invalid",
+        "S3_BUCKET": "bucket",
+    }
+    with pytest.raises(RuntimeError, match="S3_REGION") as caught:
+        s3_settings_from_env(values)
+    assert values["S3_SECRET_ACCESS_KEY"] not in str(caught.value)
+
+
+def test_upload_outputs_returns_verified_s3_uri_then_local_file_can_be_removed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    output_dir = tmp_path / "wangp-outputs"
+    output_dir.mkdir()
+    output = output_dir / "clip.mp4"
+    output.write_bytes(b"video")
+    monkeypatch.setattr("app.GENERATED_OUTPUT_ROOT", output_dir)
+
+    class FakeS3:
+        def __init__(self):
+            self.objects = {}
+
+        def upload_file(self, path, bucket, key, ExtraArgs):
+            self.objects[(bucket, key)] = {
+                "body": Path(path).read_bytes(),
+                "metadata": ExtraArgs["Metadata"],
+                "content_type": ExtraArgs["ContentType"],
+            }
+
+        def head_object(self, Bucket, Key):
+            item = self.objects[(Bucket, Key)]
+            return {
+                "ContentLength": len(item["body"]),
+                "Metadata": item["metadata"],
+            }
+
+    result = SimpleNamespace(generated_files=[str(output)])
+    client = FakeS3()
+    artifacts = upload_output_artifacts(
+        result,
+        "job-id",
+        client,
+        "bucket",
+        prefix="runninghub/wangp",
+    )
+
+    assert artifacts == [
+        {
+            "storage": "s3",
+            "bucket": "bucket",
+            "key": "runninghub/wangp/job-id/000-clip.mp4",
+            "uri": "s3://bucket/runninghub/wangp/job-id/000-clip.mp4",
+            "filename": "clip.mp4",
+            "size_bytes": 5,
+            "media_type": "video/mp4",
+            "sha256": "0cab1c9617404faf2b24e221e189ca5945813e14d3f766345b09ca13bbe28ffc",
+        }
+    ]
+    assert output.exists()
+    remove_local_outputs(result)
+    assert not output.exists()
 
 
 def test_filter_models_uses_cached_metadata():

@@ -12,7 +12,15 @@ deployed Modal runtimes:
 
 The CPU control plane accepts requests immediately and uses Modal FunctionCalls
 as the job queue. The image and video worker pools scale independently. Models,
-LoRAs, caches, settings, and outputs share the existing `wangp-data` Volume.
+LoRAs, caches, settings, and input assets share the existing `wangp-data`
+Volume. Generated images, videos, and audio use container-local scratch space,
+are uploaded to S3, and are removed after the upload is verified.
+
+Generation workers also require the existing `studio-s3` Modal Secret with
+`S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_ENDPOINT`, `S3_BUCKET`, and
+`S3_REGION`. Credentials never appear in a request or response. Output objects
+use `runninghub/wangp/<job-id>/` by default; set `WANGP_S3_OUTPUT_PREFIX` at
+deploy time to change that namespace.
 Generation and training use separate public Modal Dicts so their records cannot
 collide.
 
@@ -43,8 +51,12 @@ python3 -m modal deploy app.py
 
 `WANGP_GPU` and `WANGP_MAX_CONTAINERS` remain backward-compatible aliases for
 the image worker. The video worker defaults to 128 GiB host RAM and WanGP memory
-profile 3; override these with `WANGP_VIDEO_MEMORY_MB` and
-`WANGP_VIDEO_PROFILE` when benchmarking a different H100 configuration.
+profile 4; override these with `WANGP_VIDEO_MEMORY_MB` and
+`WANGP_VIDEO_PROFILE` when benchmarking a different H100 configuration. During
+session/model construction, the worker emits a Python stack dump every 120
+seconds so a GIL-bound loader is visible in Modal logs. Override the interval
+with `WANGP_MODEL_LOAD_TRACE_INTERVAL_SECONDS`, or set it to `0` to disable the
+diagnostic.
 
 `FIZGIG_MODAL_APP_NAME` defaults to `fizgig-modal-app`. The function names are
 the fixed internal contract `run_training` and `request_pause`.
@@ -102,7 +114,7 @@ Example response:
       "gpu": "H100",
       "max_containers": 1,
       "memory_mb": 131072,
-      "wangp_profile": "3"
+      "wangp_profile": "4"
     }
   },
   "wangp_commit": "92f56e5ee7227d490f6d85281c019e4c4e2dc393",
@@ -440,8 +452,8 @@ WanGP progress when available:
 }
 ```
 
-A successful terminal response contains storage-agnostic metadata and protected
-download URLs for the files stored in the shared Volume:
+A successful terminal response contains verified S3 references. The media is
+no longer retained in the Modal Volume:
 
 ```json
 {
@@ -452,11 +464,14 @@ download URLs for the files stored in the shared Volume:
     "success": true,
     "outputs": [
       {
-        "id": "2d457dea-9cc8-436f-ad85-d72fefec2343",
+        "storage": "s3",
+        "bucket": "bucket-rlnfehwax8alyao51e",
+        "key": "runninghub/wangp/ba2972c6-65f3-44ec-8368-38708e99c28d/000-2026-08-13-result.png",
+        "uri": "s3://bucket-rlnfehwax8alyao51e/runninghub/wangp/ba2972c6-65f3-44ec-8368-38708e99c28d/000-2026-08-13-result.png",
         "filename": "2026-08-13-result.png",
         "size_bytes": 1842201,
         "media_type": "image/png",
-        "url": "/outputs/2d457dea-9cc8-436f-ad85-d72fefec2343"
+        "sha256": "<sha256>"
       }
     ],
     "total_tasks": 1,
@@ -467,22 +482,10 @@ download URLs for the files stored in the shared Volume:
 }
 ```
 
-Download an output using its `url`. The endpoint uses the same Modal proxy
-authentication as every other route:
-
-```bash
-OUTPUT_URL="/outputs/2d457dea-9cc8-436f-ad85-d72fefec2343"
-
-curl --fail-with-body --location \
-  -H "Modal-Key: $MODAL_KEY" \
-  -H "Modal-Secret: $MODAL_SECRET" \
-  --output "result.png" \
-  "$WANGP_URL$OUTPUT_URL"
-```
-
-The public result does not expose the internal `/data` filesystem path. Download
-URLs remain valid while their output and job records remain in the Modal Dict.
-The API mounts `wangp-data` read-only and reloads it before serving a file.
+The `uri` is the durable S3 path. Each object is uploaded with SHA-256 metadata
+and verified with `head_object` before the job becomes terminal. The temporary
+local media is then deleted. Download using an S3 client authenticated for the
+configured bucket; S3 credentials are intentionally not returned by this API.
 
 ### Cancel a job
 

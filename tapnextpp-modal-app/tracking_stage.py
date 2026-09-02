@@ -16,7 +16,9 @@ from typing import Any
 SCHEMA_VERSION = 1
 EXPECTED_STAGE = "tracking"
 EXPECTED_FPS = "24/1"
-RUN_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{2,79}$")
+MAX_FRAME_COUNT = 720
+RUN_ID_PATTERN = re.compile(r"^[a-z0-9_][a-z0-9_-]{2,79}$")
+RUNS_ROOT = "runs"
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 REQUIRED_SECRET_KEYS = (
     "S3_ACCESS_KEY_ID",
@@ -25,6 +27,24 @@ REQUIRED_SECRET_KEYS = (
     "S3_BUCKET",
     "S3_REGION",
 )
+
+# Chroma tail repair is opt-in. These defaults are the fixed policy validated
+# by the controlled 243-frame studio experiment; callers may tune the numeric
+# gates explicitly, but cannot select a broader/raw-candidate arbitration mode.
+DEFAULT_CHROMA_TAIL_RECOVERY = {
+    "enabled": False,
+    "minimumTailFrames": 12,
+    "acquisitionFrames": 3,
+    "scoreMargin": 0.04,
+    "minimumScore": 0.90,
+    "minimumPrecision": 0.95,
+    "transitionFrames": 6,
+}
+SUPPORTED_QUERY_LAYOUTS = {
+    "perimeter-32",
+    "hybrid-24-edge-8-interior",
+    "perimeter-32-plus-interior-8",
+}
 
 
 @dataclass(frozen=True)
@@ -48,6 +68,14 @@ def _positive_int(value: Any, field: str) -> int:
     return value
 
 
+def _bounded_int(value: Any, field: str, minimum: int, maximum: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{field} must be an integer")
+    if not minimum <= value <= maximum:
+        raise ValueError(f"{field} must be between {minimum} and {maximum}")
+    return value
+
+
 def _finite_number(value: Any, field: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"{field} must be numeric")
@@ -55,6 +83,107 @@ def _finite_number(value: Any, field: str) -> float:
     if not math.isfinite(result):
         raise ValueError(f"{field} must be finite")
     return result
+
+
+def _bounded_number(
+    value: Any, field: str, minimum: float, maximum: float
+) -> float:
+    result = _finite_number(value, field)
+    if not minimum <= result <= maximum:
+        raise ValueError(f"{field} must be between {minimum} and {maximum}")
+    return result
+
+
+def _chroma_tail_recovery(value: Any, qa_version: int) -> dict[str, Any]:
+    """Normalize the intentionally narrow terminal-recovery policy.
+
+    Keeping this as one explicit request object makes experimental activation
+    auditable and prevents a new deployment from silently changing historical
+    tracking requests.
+    """
+    if value is None:
+        return dict(DEFAULT_CHROMA_TAIL_RECOVERY)
+    settings = _object(value, "parameters.chromaTailRecovery")
+    unknown = sorted(set(settings) - set(DEFAULT_CHROMA_TAIL_RECOVERY))
+    if unknown:
+        raise ValueError(
+            "parameters.chromaTailRecovery contains unsupported fields: "
+            + ", ".join(unknown)
+        )
+    enabled = settings.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ValueError("parameters.chromaTailRecovery.enabled must be a boolean")
+    normalized = {
+        "enabled": enabled,
+        "minimumTailFrames": _bounded_int(
+            settings.get(
+                "minimumTailFrames",
+                DEFAULT_CHROMA_TAIL_RECOVERY["minimumTailFrames"],
+            ),
+            "parameters.chromaTailRecovery.minimumTailFrames",
+            3,
+            MAX_FRAME_COUNT,
+        ),
+        "acquisitionFrames": _bounded_int(
+            settings.get(
+                "acquisitionFrames",
+                DEFAULT_CHROMA_TAIL_RECOVERY["acquisitionFrames"],
+            ),
+            "parameters.chromaTailRecovery.acquisitionFrames",
+            1,
+            12,
+        ),
+        "scoreMargin": _bounded_number(
+            settings.get(
+                "scoreMargin", DEFAULT_CHROMA_TAIL_RECOVERY["scoreMargin"]
+            ),
+            "parameters.chromaTailRecovery.scoreMargin",
+            0.0,
+            1.0,
+        ),
+        "minimumScore": _bounded_number(
+            settings.get(
+                "minimumScore", DEFAULT_CHROMA_TAIL_RECOVERY["minimumScore"]
+            ),
+            "parameters.chromaTailRecovery.minimumScore",
+            0.0,
+            1.0,
+        ),
+        "minimumPrecision": _bounded_number(
+            settings.get(
+                "minimumPrecision",
+                DEFAULT_CHROMA_TAIL_RECOVERY["minimumPrecision"],
+            ),
+            "parameters.chromaTailRecovery.minimumPrecision",
+            0.0,
+            1.0,
+        ),
+        "transitionFrames": _bounded_int(
+            settings.get(
+                "transitionFrames",
+                DEFAULT_CHROMA_TAIL_RECOVERY["transitionFrames"],
+            ),
+            "parameters.chromaTailRecovery.transitionFrames",
+            1,
+            24,
+        ),
+    }
+    if normalized["acquisitionFrames"] > normalized["minimumTailFrames"]:
+        raise ValueError(
+            "parameters.chromaTailRecovery.acquisitionFrames must not exceed "
+            "minimumTailFrames"
+        )
+    if enabled and qa_version != 2:
+        raise ValueError("chromaTailRecovery requires qaVersion 2")
+    return normalized
+
+
+def run_prefix(run_id: str) -> str:
+    return f"{RUNS_ROOT}/{run_id}/"
+
+
+def tracking_output_prefix(run_id: str) -> str:
+    return f"{run_prefix(run_id)}tracking/"
 
 
 def validate_key(key: Any, prefix: str, field: str = "key") -> str:
@@ -68,6 +197,17 @@ def validate_key(key: Any, prefix: str, field: str = "key") -> str:
     if not key.startswith(prefix):
         raise ValueError(f"{field} must remain inside {prefix}")
     return key
+
+
+def validate_output_prefix(prefix: Any, run_id: str, field: str = "output.prefix") -> str:
+    if not isinstance(prefix, str) or not prefix:
+        raise ValueError(f"{field} must be a non-empty string")
+    if not prefix.endswith("/"):
+        raise ValueError(f"{field} must end with /")
+    normalized_base = validate_key(prefix.rstrip("/"), run_prefix(run_id), field)
+    if not normalized_base.startswith(tracking_output_prefix(run_id).rstrip("/")):
+        raise ValueError(f"{field} must start with {tracking_output_prefix(run_id)}")
+    return prefix
 
 
 def _polygon_crosses(corners: list[list[float]]) -> bool:
@@ -103,7 +243,6 @@ def validate_stage_request(request: Any, configured_bucket: str) -> dict[str, An
     if not isinstance(input_hash, str) or not SHA256_PATTERN.fullmatch(input_hash):
         raise ValueError("inputHash must be a lowercase SHA-256")
 
-    experiment_prefix = f"studio-experiments/{run_id}/"
     inputs = _object(request.get("inputs"), "inputs")
     if set(inputs) != {"normalizedVideo"}:
         raise ValueError("inputs must contain only normalizedVideo")
@@ -116,7 +255,7 @@ def validate_stage_request(request: Any, configured_bucket: str) -> dict[str, An
         raise ValueError("normalizedVideo.storage must be s3")
     if video.get("bucket") != configured_bucket:
         raise ValueError("normalizedVideo.bucket does not match configured S3_BUCKET")
-    validate_key(video.get("key"), experiment_prefix, "normalizedVideo.key")
+    validate_key(video.get("key"), run_prefix(run_id), "normalizedVideo.key")
     if not isinstance(video.get("sha256"), str) or not SHA256_PATTERN.fullmatch(video["sha256"]):
         raise ValueError("normalizedVideo.sha256 must be a lowercase SHA-256")
     _positive_int(video.get("sizeBytes"), "normalizedVideo.sizeBytes")
@@ -126,7 +265,11 @@ def validate_stage_request(request: Any, configured_bucket: str) -> dict[str, An
     media = _object(request.get("expectedMedia"), "expectedMedia")
     if set(media) != {"frames", "fps", "width", "height"}:
         raise ValueError("expectedMedia fields are invalid")
-    _positive_int(media.get("frames"), "expectedMedia.frames")
+    frame_count = _positive_int(media.get("frames"), "expectedMedia.frames")
+    if frame_count > MAX_FRAME_COUNT:
+        raise ValueError(
+            f"expectedMedia.frames must not exceed {MAX_FRAME_COUNT}"
+        )
     if media.get("fps") != EXPECTED_FPS:
         raise ValueError("tracking requires 24/1 fps")
     _positive_int(media.get("width"), "expectedMedia.width")
@@ -136,6 +279,7 @@ def validate_stage_request(request: Any, configured_bucket: str) -> dict[str, An
     allowed_parameters = {
         "frameZeroCorners", "cornerOrder", "surface", "analysis",
         "maxReferenceAreaRatio", "qaVersion", "evidenceMode",
+        "chromaTailRecovery", "queryLayout",
     }
     if set(parameters) - allowed_parameters:
         raise ValueError("parameters contains unsupported fields")
@@ -143,6 +287,16 @@ def validate_stage_request(request: Any, configured_bucket: str) -> dict[str, An
         raise ValueError("cornerOrder is invalid")
     if parameters.get("qaVersion") not in {1, 2}:
         raise ValueError("qaVersion must be 1 or 2")
+    parameters["chromaTailRecovery"] = _chroma_tail_recovery(
+        parameters.get("chromaTailRecovery"), parameters["qaVersion"]
+    )
+    query_layout = parameters.get("queryLayout", "perimeter-32")
+    if query_layout not in SUPPORTED_QUERY_LAYOUTS:
+        raise ValueError(
+            "queryLayout must be perimeter-32, hybrid-24-edge-8-interior, "
+            "or perimeter-32-plus-interior-8"
+        )
+    parameters["queryLayout"] = query_layout
     evidence_mode = parameters.get("evidenceMode", "full")
     if evidence_mode not in {"full", "none"}:
         raise ValueError("evidenceMode must be full or none")
@@ -182,9 +336,7 @@ def validate_stage_request(request: Any, configured_bucket: str) -> dict[str, An
         raise ValueError("output fields are invalid")
     if output.get("bucket") != configured_bucket:
         raise ValueError("output.bucket does not match configured S3_BUCKET")
-    expected_prefix = f"{experiment_prefix}tracking/{input_hash}/"
-    if output.get("prefix") != expected_prefix:
-        raise ValueError("output.prefix does not match runId, stage, and inputHash")
+    validate_output_prefix(output.get("prefix"), run_id)
     return request
 
 

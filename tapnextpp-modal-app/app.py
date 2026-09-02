@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import tempfile
@@ -12,6 +13,7 @@ from typing import Any
 import modal
 
 from tracking_stage import (
+    MAX_FRAME_COUNT,
     REQUIRED_SECRET_KEYS,
     artifact_ref,
     create_s3_client,
@@ -42,7 +44,7 @@ MAX_CONTAINERS = 1
 SCALEDOWN_WINDOW = 5 * 60
 STARTUP_TIMEOUT = 30 * 60
 FUNCTION_TIMEOUT = 30 * 60
-MAX_FRAMES = 300
+MAX_FRAMES = MAX_FRAME_COUNT
 MIN_POINTS = 4
 MAX_POINTS = 128
 
@@ -73,7 +75,9 @@ tracker_image = (
             "PYTHONUNBUFFERED": "1",
         }
     )
-    .add_local_python_source("tracking_stage", "tracking_geometry")
+    .add_local_python_source(
+        "tracking_stage", "tracking_geometry", "chroma_arbitration"
+    )
 )
 
 control_image = modal.Image.debian_slim(python_version="3.11").add_local_python_source(
@@ -88,7 +92,9 @@ stage_image = (
         "numpy>=2,<3",
         "opencv-python-headless>=4.12,<5",
     )
-    .add_local_python_source("tracking_stage", "tracking_geometry")
+    .add_local_python_source(
+        "tracking_stage", "tracking_geometry", "chroma_arbitration"
+    )
 )
 app = modal.App(APP_NAME)
 studio_s3_secret = modal.Secret.from_name(
@@ -267,6 +273,14 @@ def _run_tracking_path(video_path: Path, request: dict[str, Any]) -> dict[str, A
     }
 
 
+def _parameter_fingerprint(request: dict[str, Any]) -> str:
+    """Separate cached results when the same video uses different policies."""
+    encoded = json.dumps(
+        request["parameters"], sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def _committed_result(client: Any, bucket: str, key: str, request: dict[str, Any]) -> dict[str, Any] | None:
     try:
         response = client.get_object(Bucket=bucket, Key=key)
@@ -283,6 +297,9 @@ def _committed_result(client: Any, bucket: str, key: str, request: dict[str, Any
         and payload.get("runId") == request["runId"]
         and payload.get("stage") == "tracking"
         and payload.get("inputHash") == request["inputHash"]
+        # The output prefix is video-addressed. This additional check prevents
+        # an opt-in chroma request from reusing a committed baseline-only run.
+        and payload.get("parameterFingerprint") == _parameter_fingerprint(request)
     ):
         return payload
     return None
@@ -291,7 +308,12 @@ def _committed_result(client: Any, bucket: str, key: str, request: dict[str, Any
 def _run_s3_stage(request: dict[str, Any], tracking_runner: Any) -> dict[str, Any]:
     import imageio.v3 as iio
 
-    from tracking_geometry import build_geometry, render_review_artifacts, seed_queries
+    from tracking_geometry import (
+        build_geometry,
+        render_review_artifacts,
+        seed_queries,
+        select_suspects,
+    )
 
     settings = s3_settings_from_env()
     normalized = validate_stage_request(request, settings.bucket)
@@ -328,6 +350,7 @@ def _run_s3_stage(request: dict[str, Any], tracking_runner: Any) -> dict[str, An
             parameters["frameZeroCorners"], expected["width"], expected["height"],
             parameters["analysis"]["width"], parameters["analysis"]["height"],
             include_corner_probes=parameters["qaVersion"] == 2,
+            query_layout=parameters["queryLayout"],
         )
         point_request = {
             "analysis_width": parameters["analysis"]["width"],
@@ -346,6 +369,19 @@ def _run_s3_stage(request: dict[str, Any], tracking_runner: Any) -> dict[str, An
         coordinates, metrics, suspects, stable = build_geometry(
             tracking_result, parameters, expected
         )
+        if parameters["chromaTailRecovery"]["enabled"]:
+            from chroma_arbitration import apply_terminal_chroma_tail_recovery
+
+            coordinates, metrics, stable = apply_terminal_chroma_tail_recovery(
+                frames,
+                coordinates,
+                metrics,
+                stable,
+                parameters["chromaTailRecovery"],
+            )
+            # Motion metrics and suspect ranking must describe the geometry we
+            # actually publish, not the pre-arbitration TAPNext++ trajectory.
+            suspects = select_suspects(coordinates["frames"], metrics)
         coordinates_path = scratch / "coordinates.json"
         metrics_path = scratch / "metrics.json"
         write_json(coordinates_path, coordinates)
@@ -373,7 +409,9 @@ def _run_s3_stage(request: dict[str, Any], tracking_runner: Any) -> dict[str, An
             f"direct good {metrics['directGood']} recovered {metrics['recovered']}\n"
             f"partial {metrics.get('partialRecovered', 0)} predicted "
             f"{metrics.get('predictionOnly', 0)} bridged {metrics.get('bridged', 0)} "
-            f"held {metrics.get('held', 0)}\n",
+            f"held {metrics.get('held', 0)}\n"
+            f"chroma tail {metrics.get('chromaTailReason', 'disabled')} "
+            f"applied {metrics.get('chromaTailApplied', False)}\n",
             encoding="utf-8",
         )
         (attempt_dir / "stderr.log").write_text("", encoding="utf-8")
@@ -419,6 +457,9 @@ def _run_s3_stage(request: dict[str, Any], tracking_runner: Any) -> dict[str, An
         for key in (
             "partialRecovered", "predictionOnly", "bridged", "held",
             "fullyOffscreen", "maximumPredictionAge",
+            "chromaTailApplied", "chromaTailReason", "chromaTailRecoveryStart",
+            "chromaTailConfirmationFrame", "chromaTailBlendStart",
+            "chromaTailSourceCounts",
         ):
             if key in metrics:
                 summary_metrics[key] = metrics[key]
@@ -426,9 +467,10 @@ def _run_s3_stage(request: dict[str, Any], tracking_runner: Any) -> dict[str, An
             "schemaVersion": 1, "success": True,
             "runId": normalized["runId"], "stage": "tracking",
             "inputHash": normalized["inputHash"],
+            "parameterFingerprint": _parameter_fingerprint(normalized),
             "implementation": {
                 "name": "tapnextpp-modal-stage",
-                "version": f"{TAPNET_COMMIT}:{CHECKPOINT_GENERATION}:qa4-offscreen-v2",
+                "version": f"{TAPNET_COMMIT}:{CHECKPOINT_GENERATION}:qa7-query-layout-chroma-tail-v1",
             },
             "metrics": summary_metrics, "suspects": suspects,
             "artifacts": artifacts, "debug": debug, "completedAt": utc_now(),
@@ -446,6 +488,8 @@ def health() -> dict[str, Any]:
         "ready": True,
         "gpu": GPU_TYPE,
         "maxContainers": MAX_CONTAINERS,
+        "maxFrames": MAX_FRAMES,
+        "overviewSheetFrames": 30,
         "qaVersions": [1, 2],
         "model": model_metadata(),
     }
@@ -482,7 +526,7 @@ def track_stage_points_s3(
     image=stage_image,
     secrets=[studio_s3_secret],
     cpu=4,
-    memory=8_192,
+    memory=16_384,
     min_containers=0,
     max_containers=MAX_CONTAINERS,
     timeout=FUNCTION_TIMEOUT,

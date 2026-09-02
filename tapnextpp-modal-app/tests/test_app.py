@@ -5,8 +5,10 @@ from app import (
     CHECKPOINT_GENERATION,
     CHECKPOINT_MD5,
     CHECKPOINT_SIZE,
+    MAX_FRAMES,
     MODEL_INPUT_RESOLUTION,
     TAPNET_COMMIT,
+    _parameter_fingerprint,
     model_metadata,
     validate_request,
 )
@@ -35,6 +37,7 @@ def test_deployment_and_model_are_pinned():
     assert len(CHECKPOINT_MD5) == 32
     assert CHECKPOINT_SIZE > 2_000_000_000
     assert MODEL_INPUT_RESOLUTION == 512
+    assert MAX_FRAMES == 720
     assert model_metadata()["commit"] == TAPNET_COMMIT
     assert model_metadata()["license"] == "Apache-2.0"
 
@@ -63,3 +66,19 @@ def test_request_preserves_query_order_and_normalizes_numbers():
 def test_request_rejects_invalid_inputs(overrides, message):
     with pytest.raises(ValueError, match=message):
         validate_request(valid_request(**overrides))
+
+
+def test_stage_cache_fingerprint_changes_with_chroma_policy():
+    baseline = {
+        "parameters": {
+            "qaVersion": 2,
+            "chromaTailRecovery": {"enabled": False},
+        }
+    }
+    assisted = {
+        "parameters": {
+            "qaVersion": 2,
+            "chromaTailRecovery": {"enabled": True},
+        }
+    }
+    assert _parameter_fingerprint(baseline) != _parameter_fingerprint(assisted)
