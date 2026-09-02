@@ -1,23 +1,25 @@
+import inspect
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+import control
+
 from app import (
-    JOB_DICT_NAME,
     JobCallbacks,
-    WanGPImageWorker,
-    WanGPVideoWorker,
     canonical_output_path,
-    filter_models,
-    load_params_file,
-    normalized_absolute_path,
     remove_local_outputs,
-    resolve_generation_kind,
-    select_generation_worker,
     s3_settings_from_env,
     serialize_result,
     upload_output_artifacts,
+)
+from control import generation_worker_name, load_params_file, load_params_json
+from wangpt_common import (
+    JOB_DICT_NAME,
+    filter_models,
+    normalized_absolute_path,
+    resolve_generation_kind,
     validate_data_paths,
     validate_job_request,
 )
@@ -269,15 +271,15 @@ def test_generation_kind_uses_native_image_mode_for_dual_output_model(
     )
 
 
-def test_generation_worker_routes_video_to_h100_pool_and_other_media_to_image_pool():
-    assert select_generation_worker("video") is WanGPVideoWorker
-    assert select_generation_worker("image") is WanGPImageWorker
-    assert select_generation_worker("audio") is WanGPImageWorker
+def test_generation_worker_routes_video_to_video_pool_and_other_media_to_image_pool():
+    assert generation_worker_name("video") == "WanGPVideoWorker"
+    assert generation_worker_name("image") == "WanGPImageWorker"
+    assert generation_worker_name("audio") == "WanGPImageWorker"
 
 
 def test_generation_worker_rejects_unknown_kind():
     with pytest.raises(ValueError, match="unsupported generation kind"):
-        select_generation_worker("text")
+        generation_worker_name("text")
 
 
 def test_params_file_loads_json_object(tmp_path: Path):
@@ -293,5 +295,91 @@ def test_params_file_rejects_non_object(tmp_path: Path):
         load_params_file(str(params_file))
 
 
+def test_params_json_loads_inline_object():
+    assert load_params_json('{"prompt":"fox","seed":-1}') == {
+        "prompt": "fox",
+        "seed": -1,
+    }
+
+
+def test_params_json_rejects_invalid_or_non_object_values():
+    with pytest.raises(ValueError, match="not valid"):
+        load_params_json("{")
+    with pytest.raises(ValueError, match="must be an object"):
+        load_params_json("[]")
+
+
+def test_krea_submit_uses_fixed_model_and_image_route(monkeypatch):
+    captured = {}
+
+    def fake_submit(model, params, kind):
+        captured.update(model=model, params=params, kind=kind)
+        return {"id": "job", "status": "queued", "kind": kind}
+
+    monkeypatch.setattr(control, "submit_generation", fake_submit)
+
+    result = control.submit_krea_generation({"prompt": "fox", "seed": 42})
+
+    assert result == {"id": "job", "status": "queued", "kind": "image"}
+    assert captured["model"] == "krea2_turbo"
+    assert captured["kind"] == "image"
+    assert captured["params"]["seed"] == 42
+
+
+def test_krea_submit_requires_prompt():
+    with pytest.raises(ValueError, match="params.prompt"):
+        control.submit_krea_generation({"seed": -1})
+
+
+def test_krea_help_describes_json_and_lora_contract():
+    assert control.KREA_HELP["params_json"]["required"]["prompt"] == {
+        "type": "string"
+    }
+    assert control.KREA_HELP["params_json"]["optional"]["seed"]["default"] == -1
+    assert control.KREA_HELP["lora_example"] == {
+        "prompt": "linda standing in a sunlit photography studio",
+        "activated_loras": [
+            "/data/loras/krea2/linda_krea2_v1.safetensors"
+        ],
+        "loras_multipliers": "0.8",
+    }
+
+
+def test_krea2_turbo_example_has_documented_baseline():
+    params = load_params_file("examples/krea2_turbo.json")
+    assert params["resolution"] == "1024x1024"
+    assert params["num_inference_steps"] == 8
+    assert params["guidance_scale"] == 0
+    assert params["flow_shift"] == 5.0
+    assert "model" not in params
+    assert "model_type" not in params
+    assert "_api" not in params
+
+
 def test_new_app_uses_an_independent_job_store():
     assert JOB_DICT_NAME == "wangpt-modal-jobs"
+
+
+def test_control_cli_helpers_are_local_python_functions():
+    assert inspect.isfunction(control.submit_generation)
+    assert inspect.isfunction(control.get_generation_job)
+    assert inspect.isfunction(control.cancel_generation_job)
+    assert inspect.isfunction(control.inspect_catalog)
+    assert not hasattr(control, "control_image")
+
+
+def test_catalog_cache_hit_does_not_start_catalog_publisher(monkeypatch):
+    catalog = {"models": []}
+
+    class CatalogStore:
+        def get(self, key):
+            assert key
+            return catalog
+
+    def fail_if_called(*args, **kwargs):
+        pytest.fail("cached catalog lookup must not start publish_catalog")
+
+    monkeypatch.setattr(control, "catalog_store", CatalogStore())
+    monkeypatch.setattr(control.modal.Function, "from_name", fail_if_called)
+
+    assert control.load_deployed_catalog() is catalog

@@ -1,36 +1,40 @@
-"""Asynchronous WanGP generation on Modal with a local CLI control plane."""
+"""GPU worker app for asynchronous WanGP generation on Modal."""
 
 from __future__ import annotations
 
 import faulthandler
 import hashlib
-import json
 import mimetypes
 import os
 import shutil
 import sys
-import uuid
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, Callable
 
 import modal
 
+from wangpt_common import (
+    CATALOG_DICT_NAME,
+    DATA_ROOT,
+    JOB_DICT_NAME,
+    WAN_COMMIT,
+    WORKER_APP_NAME,
+    normalized_absolute_path,
+    utc_now,
+    validate_job_request,
+)
 
-APP_NAME = "wangpt-modal-app"
 WAN_ROOT = Path("/opt/Wan2GP")
 WAN2AI_ROOT = Path("/opt/Wan2AI")
-DATA_ROOT = Path("/data")
 GENERATED_OUTPUT_ROOT = Path("/tmp/wangp-outputs")
 CATALOG_PATH = Path("/opt/wangp-catalog.json")
-WAN_COMMIT = "92f56e5ee7227d490f6d85281c019e4c4e2dc393"
 WAN2AI_COMMIT = "2539c3a87b64fa0f619695f02410fc92c63cba7d"
 
 IMAGE_GPU_TYPE = os.environ.get(
     "WANGP_IMAGE_GPU",
     os.environ.get("WANGP_GPU", "L40S"),
 )
-VIDEO_GPU_TYPE = os.environ.get("WANGP_VIDEO_GPU", "H100")
+VIDEO_GPU_TYPE = os.environ.get("WANGP_VIDEO_GPU", "A100")
 IMAGE_MAX_CONTAINERS = int(
     os.environ.get(
         "WANGP_IMAGE_MAX_CONTAINERS",
@@ -49,7 +53,6 @@ SCALEDOWN_WINDOW = 5 * 60
 STARTUP_TIMEOUT = 30 * 60
 
 DATA_VOLUME_NAME = "wangp-data"
-JOB_DICT_NAME = "wangpt-modal-jobs"
 S3_SECRET_NAME = "studio-s3"
 S3_REQUIRED_KEYS = (
     "S3_ACCESS_KEY_ID",
@@ -81,6 +84,7 @@ studio_s3_secret = modal.Secret.from_name(
     required_keys=list(S3_REQUIRED_KEYS),
 )
 job_store = modal.Dict.from_name(JOB_DICT_NAME, create_if_missing=True)
+catalog_store = modal.Dict.from_name(CATALOG_DICT_NAME, create_if_missing=True)
 
 gpu_image = (
     modal.Image.from_registry(
@@ -129,6 +133,7 @@ gpu_image = (
         copy=True,
     )
     .run_commands("python /opt/generate_catalog.py")
+    .add_local_python_source("wangpt_common", copy=True)
 )
 
 # Share the expensive WanGP build layers while keeping independent Modal images
@@ -136,15 +141,7 @@ gpu_image = (
 image_worker_image = gpu_image.env({"WANGP_WORKER_KIND": "image"})
 video_worker_image = gpu_image.env({"WANGP_WORKER_KIND": "video"})
 
-# Dispatch and discovery run in CPU containers using the catalog baked into
-# this image. Sharing it with GPU workers keeps catalog and runtime in sync.
-control_image = gpu_image
-
-app = modal.App(APP_NAME)
-
-
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+app = modal.App(WORKER_APP_NAME)
 
 
 def log_runtime_stage(job_id: str, stage: str, **details: Any) -> None:
@@ -154,11 +151,6 @@ def log_runtime_stage(job_id: str, stage: str, **details: Any) -> None:
     if suffix:
         message = f"{message} {suffix}"
     print(message, flush=True)
-
-
-def normalized_absolute_path(path: str | os.PathLike[str]) -> Path:
-    """Normalize traversal without resolving Modal Volume mount internals."""
-    return Path(os.path.abspath(os.path.normpath(path)))
 
 
 def canonical_output_path(path: str | os.PathLike[str]) -> Path:
@@ -179,33 +171,6 @@ def canonical_output_path(path: str | os.PathLike[str]) -> Path:
             f"WanGP output is not under {GENERATED_OUTPUT_ROOT}: {path}"
         ) from exc
     return GENERATED_OUTPUT_ROOT / relative
-
-
-def validate_job_request(model: str, params: dict[str, Any]) -> dict[str, Any]:
-    model = model.strip()
-    if not model:
-        raise ValueError("model must not be empty")
-    if "_api" in params:
-        raise ValueError("params._api is reserved by the runtime")
-    settings = dict(params)
-    settings["model_type"] = model
-    return settings
-
-
-def validate_data_paths(value: Any, key: str = "params") -> None:
-    """Reject absolute filesystem paths outside the shared data Volume."""
-    if isinstance(value, dict):
-        for child_key, child_value in value.items():
-            validate_data_paths(child_value, f"{key}.{child_key}")
-    elif isinstance(value, list):
-        for index, child_value in enumerate(value):
-            validate_data_paths(child_value, f"{key}[{index}]")
-    elif isinstance(value, str) and value.startswith("/"):
-        raw_path = value.split("|", 1)[0]
-        try:
-            normalized_absolute_path(raw_path).relative_to(DATA_ROOT)
-        except ValueError as exc:
-            raise ValueError(f"{key} must reference a path under /data") from exc
 
 
 def serialize_error(error: Any) -> dict[str, Any]:
@@ -322,71 +287,6 @@ def serialize_result(result: Any, outputs: list[dict[str, Any]] | None = None) -
 
 def load_catalog(path: Path = CATALOG_PATH) -> dict[str, Any]:
     return __import__("json").loads(path.read_text())
-
-
-def filter_models(
-    models: list[dict[str, Any]],
-    family: str | None = None,
-    model_type: str | None = None,
-) -> list[dict[str, Any]]:
-    result = models
-    if family:
-        result = [item for item in result if item.get("family") == family]
-    if model_type:
-        result = [item for item in result if item.get("model_type") == model_type]
-    return result
-
-
-def resolve_generation_kind(
-    catalog: dict[str, Any],
-    model: str,
-    requested_kind: str | None = None,
-    params: dict[str, Any] | None = None,
-) -> Literal["image", "video", "audio"]:
-    """Resolve and validate the worker route from WanGP model metadata."""
-    model = model.strip()
-    metadata = next(
-        (
-            item
-            for item in catalog.get("models", [])
-            if item.get("model_type") == model
-        ),
-        None,
-    )
-    if metadata is None:
-        raise ValueError(f"unknown model: {model}")
-
-    raw_outputs = metadata.get("main_output", [])
-    if isinstance(raw_outputs, str):
-        raw_outputs = [raw_outputs]
-    outputs = [
-        output
-        for output in raw_outputs
-        if output in {"image", "video", "audio"}
-    ]
-    if not outputs:
-        raise ValueError(f"model {model!r} does not declare a routable output type")
-
-    if requested_kind is not None:
-        if requested_kind not in {"image", "video", "audio"}:
-            raise ValueError("kind must be one of: image, video, audio")
-        if requested_kind not in outputs:
-            choices = ", ".join(outputs)
-            raise ValueError(
-                f"model {model!r} supports {choices}, not {requested_kind}"
-            )
-        return requested_kind
-
-    if len(outputs) == 1:
-        return outputs[0]
-
-    # Models that switch between image and video use image_mode. Overlay the
-    # request on baked defaults to preserve WanGP's native behavior.
-    settings = dict(catalog.get("defaults", {}).get(model, {}))
-    settings.update(params or {})
-    if "image" in outputs and "video" in outputs:
-        return "image" if settings.get("image_mode", 0) else "video"
-    return outputs[0]
 
 
 def _ensure_cache_layout() -> None:
@@ -636,220 +536,13 @@ class WanGPVideoWorker:
         return self.runtime.run(job_id, model, params)
 
 
-def select_generation_worker(kind: str) -> Any:
-    """Map catalog output kinds onto the independently configured GPU pools."""
-    if kind == "video":
-        return WanGPVideoWorker
-    if kind in {"image", "audio"}:
-        return WanGPImageWorker
-    raise ValueError(f"unsupported generation kind: {kind}")
-
-
-@app.function(image=control_image, min_containers=0, max_containers=4)
-def submit_generation(
-    model: str,
-    params: dict[str, Any],
-    kind: str | None = None,
-) -> dict[str, Any]:
-    """Validate, route, and detach one generation job."""
-    if not isinstance(params, dict):
-        raise ValueError("params must be a JSON object")
-
+@app.function(image=gpu_image, min_containers=0, max_containers=1)
+def publish_catalog() -> dict[str, Any]:
+    """Publish this worker revision's baked catalog for the local CLI."""
     catalog = load_catalog()
-    model = model.strip()
-    validate_job_request(model, params)
-    validate_data_paths(params)
-    resolved_kind = resolve_generation_kind(catalog, model, kind, params)
-
-    job_id = str(uuid.uuid4())
-    timestamp = utc_now()
-    record = {
-        "id": job_id,
-        "call_id": None,
-        "status": "queued",
-        "kind": resolved_kind,
-        "model": model,
-        "created_at": timestamp,
-        "updated_at": timestamp,
+    catalog_store.put(WAN_COMMIT, catalog)
+    return {
+        "catalog_key": WAN_COMMIT,
+        "models": len(catalog.get("models", [])),
+        "wan_commit": WAN_COMMIT,
     }
-    job_store.put(job_id, record)
-
-    worker = select_generation_worker(resolved_kind)
-    try:
-        call = worker().run.spawn(job_id, model, params)
-    except BaseException as exc:
-        failure_time = utc_now()
-        record.update(
-            status="failed",
-            result={
-                "success": False,
-                "errors": [{"message": str(exc), "stage": "dispatch"}],
-            },
-            completed_at=failure_time,
-            updated_at=failure_time,
-        )
-        job_store.put(job_id, record)
-        raise
-
-    record["call_id"] = call.object_id
-    record["updated_at"] = utc_now()
-    job_store.put(job_id, record)
-    return {"id": job_id, "status": "queued", "kind": resolved_kind}
-
-
-@app.function(image=control_image, min_containers=0, max_containers=4)
-def get_generation_job(job_id: str) -> dict[str, Any]:
-    """Return a job record and reconcile pre-worker Modal failures."""
-    record = job_store.get(job_id)
-    if record is None:
-        raise ValueError("job not found or expired")
-
-    if record["status"] in {"queued", "running"} and record.get("call_id"):
-        call = modal.FunctionCall.from_id(record["call_id"])
-        try:
-            call.get(timeout=0)
-        except TimeoutError:
-            pass
-        except modal.exception.OutputExpiredError as exc:
-            raise ValueError("job result expired") from exc
-        except Exception as exc:
-            record = job_store.get(job_id, record)
-            if record["status"] not in {"succeeded", "failed", "cancelled"}:
-                timestamp = utc_now()
-                record.update(
-                    status="failed",
-                    result={
-                        "success": False,
-                        "errors": [{"message": str(exc), "stage": "modal"}],
-                    },
-                    completed_at=timestamp,
-                    updated_at=timestamp,
-                )
-                job_store.put(job_id, record)
-        else:
-            record = job_store.get(job_id, record)
-    return record
-
-
-@app.function(image=control_image, min_containers=0, max_containers=4)
-def cancel_generation_job(job_id: str) -> dict[str, Any]:
-    """Cancel one queued or running FunctionCall."""
-    record = job_store.get(job_id)
-    if record is None:
-        raise ValueError("job not found or expired")
-    if record["status"] == "cancelled":
-        return record
-    if record["status"] in {"succeeded", "failed"}:
-        raise ValueError("job is already terminal")
-    if not record.get("call_id"):
-        raise RuntimeError("job has not finished dispatching")
-
-    call = modal.FunctionCall.from_id(record["call_id"])
-    call.cancel(terminate_containers=True)
-    timestamp = utc_now()
-    record.update(
-        status="cancelled",
-        completed_at=timestamp,
-        updated_at=timestamp,
-    )
-    job_store.put(job_id, record)
-    return record
-
-
-@app.function(image=control_image, min_containers=0, max_containers=4)
-def inspect_catalog(
-    operation: str,
-    model: str = "",
-    family: str = "",
-    model_type: str = "",
-) -> Any:
-    """Read the catalog baked into the deployed WanGP image."""
-    catalog = load_catalog()
-    if operation == "models":
-        return filter_models(
-            catalog["models"],
-            family=family or None,
-            model_type=model_type or None,
-        )
-    if operation not in {"defaults", "schema"}:
-        raise ValueError(f"unknown catalog operation: {operation}")
-    result = catalog[f"{operation}s"].get(model)
-    if result is None:
-        raise ValueError(f"unknown model: {model}")
-    return result
-
-
-def load_params_file(params_file: str) -> dict[str, Any]:
-    """Load a local JSON object for the submit entrypoint."""
-    if not params_file:
-        return {}
-    path = Path(params_file).expanduser()
-    try:
-        params = json.loads(path.read_text())
-    except OSError as exc:
-        raise ValueError(f"could not read params file {path}: {exc}") from exc
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"params file is not valid JSON: {exc}") from exc
-    if not isinstance(params, dict):
-        raise ValueError("params file must contain a JSON object")
-    return params
-
-
-def print_json(value: Any) -> None:
-    print(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True))
-
-
-def deployed_function(name: str) -> modal.Function:
-    """Look up the stable deployment rather than an ephemeral `modal run` app."""
-    return modal.Function.from_name(APP_NAME, name)
-
-
-@app.local_entrypoint()
-def submit(model: str, params_file: str = "", kind: str = "") -> None:
-    """Submit a generation request to the deployed dispatcher."""
-    params = load_params_file(params_file)
-    requested_kind = kind.strip() or None
-    result = deployed_function("submit_generation").remote(
-        model,
-        params,
-        requested_kind,
-    )
-    print_json(result)
-
-
-@app.local_entrypoint()
-def status(job_id: str) -> None:
-    """Print the latest record for a generation job."""
-    print_json(deployed_function("get_generation_job").remote(job_id))
-
-
-@app.local_entrypoint()
-def cancel(job_id: str) -> None:
-    """Cancel one generation job."""
-    print_json(deployed_function("cancel_generation_job").remote(job_id))
-
-
-@app.local_entrypoint()
-def models(family: str = "", model_type: str = "") -> None:
-    """List catalog models, optionally filtered by family or model type."""
-    result = deployed_function("inspect_catalog").remote(
-        "models",
-        "",
-        family,
-        model_type,
-    )
-    print_json(result)
-
-
-@app.local_entrypoint()
-def defaults(model: str) -> None:
-    """Print the native default settings for one model."""
-    result = deployed_function("inspect_catalog").remote("defaults", model)
-    print_json(result)
-
-
-@app.local_entrypoint()
-def schema(model: str) -> None:
-    """Print the native parameter schema for one model."""
-    result = deployed_function("inspect_catalog").remote("schema", model)
-    print_json(result)

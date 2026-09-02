@@ -1,0 +1,10 @@
+{
+  "prompt": "A red fox walking through fresh snow at golden hour",
+  "negative_prompt": "blurry, low quality",
+  "resolution": "1024x1024",
+  "num_inference_steps": 8,
+  "seed": 12345,
+  "batch_size": 1,
+  "guidance_scale": 0,
+  "flow_shift": 5.0
+}
