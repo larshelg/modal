@@ -1,0 +1,18 @@
+[project]
+name = "wangpt-modal-app"
+version = "0.1.0"
+description = "Asynchronous WanGP generation with catalog-based Modal GPU routing."
+requires-python = ">=3.11"
+dependencies = [
+    "boto3>=1.40,<2",
+    "modal>=1.5,<2",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4,<9",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
