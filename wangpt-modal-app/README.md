@@ -91,6 +91,71 @@ python3 -m modal run control.py::refresh_catalog
 Set `WANGP_MODEL_LOAD_TRACE_INTERVAL_SECONDS=0` to disable periodic stack dumps
 during slow model loading.
 
+## Singularity GPU snapshot experiment
+
+`WanGPSingularityWorker` warms the exact
+`minimax_h3_ref2va_singularity_pruned` preset, including its built-in 4-step LoRA,
+in `@modal.enter(snap=True)`. It uses a synthetic reference image and removes
+warmup artifacts without publishing a job or uploading to S3. After native
+cleanup, MMGP's `ensure_model_loaded("transformer")` stages only the transformer
+on CUDA. Capture and immediate restore checks require all transformer tensors
+on CUDA, other components on CPU, and at least 19 GiB allocated (the INT8
+transformer is about 19.6 GiB). A failed restore check never reloads the model to
+hide the failure. See [snapshot.md](snapshot.md) for deployed validation.
+WanGP also removes active LoRA adapters at task completion. Warmup verifies the
+accelerator during inference; it is loaded again through the native path on
+subsequent requests. An empty idle `active_loras` list is therefore expected.
+
+The worker has independent H100 settings: `WANGP_SINGULARITY_PROFILE=1`,
+`WANGP_SINGULARITY_MEMORY_MB=131072`, `WANGP_SINGULARITY_MAX_CONTAINERS=1`, and
+`WANGP_SINGULARITY_SCALEDOWN_WINDOW=300`. Set these before deployment if needed.
+Generic image and video workers keep their existing settings.
+This transformer-resident revision requires profile 1. Native inference and
+cleanup remain in control of later CPU/GPU transfers; a request may offload the
+captured transformer while encoding text. No extra components or identity LoRAs
+are staged. Rolling back to the CPU/offload baseline requires the previous
+worker revision, not just a profile override.
+
+Deploy the updated `app.py`, then explicitly submit Singularity to the snapshot
+pool from the local client:
+
+```bash
+WANGP_SINGULARITY_SNAPSHOT=1 python3 -m modal run control.py::submit \
+  --model minimax_h3_ref2va_singularity_pruned \
+  --params-file job-singularity.json
+```
+
+Only the exact value `1` enables this route. Without it, Singularity still uses
+the ordinary video worker. All other models keep their usual routes regardless
+of this switch. Job records include the selected `worker`.
+
+To initialize or inspect the dedicated pool without publishing a generation:
+
+```bash
+python3 -m modal run control.py::snapshot_probe
+```
+
+This command starts a billable GPU container and runs warmup when a snapshot is
+not available. Its result reports capture/boot IDs, warmup timing, loaded
+configuration and accelerator, CUDA memory, logical tensor placement, and
+separate capture/immediate-restore reports. The stored restore report precedes
+all inference and any reloading; current memory can differ after generation.
+A shared capture ID across distinct boot IDs is evidence of reused captured
+state; confirm actual restoration in Modal's container view/logs. The first
+call can create a snapshot and is not a restore benchmark.
+
+Snapshot logs also report request duration, first denoising progress, native
+`load_models` calls, and whether the model object was reused. First-denoising
+progress is recorded only when the total matches the explicitly requested step
+count, excluding the text encoder's 50-step transition. Timing starts at method entry and
+excludes queueing/container startup; combine it with client/job timestamps for
+end-to-end latency. A changed request configuration may legitimately reload
+the model. Bump `SNAPSHOT_REVISION` in `h3_snapshot.py` when changing external
+assets: Volume changes alone do not invalidate snapshots.
+
+Rollback for new requests is simply omitting/unsetting
+`WANGP_SINGULARITY_SNAPSHOT`; in-flight jobs are not retried or cancelled.
+
 ## Discover models
 
 List every model in the catalog:

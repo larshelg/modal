@@ -1,0 +1,11 @@
+{
+  "prompt": "summary: A tiny brass robot paints a blue ceramic teacup in a sunlit workshop.\ndetailed_description: [Shot 1] Close-up of a palm-sized brass robot at a wooden workbench. It carefully draws one golden stripe around a blue ceramic teacup with a fine paintbrush. Its small mechanical fingers move smoothly, and the brush stays in contact with the cup. Warm afternoon sunlight enters from the left, illuminating dust motes and worn metal surfaces. One continuous shot with a gentle camera push-in, realistic materials and coherent motion.\noverall_soundscape: Soft servo whirring, the faint scrape of a paintbrush on ceramic, and distant birds outside an open window.\nnon_diegetic_music: None.",
+  "resolution": "832x480",
+  "video_length": 124,
+  "num_inference_steps": 4,
+  "sample_solver": "euler",
+  "flow_shift": 12.0,
+  "guidance_scale": 1.0,
+  "guidance_phases": 1,
+  "seed": -1
+}

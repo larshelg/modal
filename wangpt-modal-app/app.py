@@ -8,6 +8,8 @@ import mimetypes
 import os
 import shutil
 import sys
+import time
+import uuid
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import unquote, urlsplit
@@ -28,6 +30,7 @@ from wangpt_common import (
     CATALOG_DICT_NAME,
     DATA_ROOT,
     JOB_DICT_NAME,
+    SINGULARITY_MODEL,
     WAN_COMMIT,
     WORKER_APP_NAME,
     normalized_absolute_path,
@@ -63,6 +66,10 @@ MODEL_LOAD_TRACE_INTERVAL_SECONDS = int(
 )
 SCALEDOWN_WINDOW = 5 * 60
 STARTUP_TIMEOUT = 30 * 60
+SINGULARITY_MEMORY_MB = int(os.environ.get("WANGP_SINGULARITY_MEMORY_MB", "131072"))
+SINGULARITY_MAX_CONTAINERS = int(os.environ.get("WANGP_SINGULARITY_MAX_CONTAINERS", "1"))
+SINGULARITY_PROFILE = os.environ.get("WANGP_SINGULARITY_PROFILE", "1")
+SINGULARITY_SCALEDOWN_WINDOW = int(os.environ.get("WANGP_SINGULARITY_SCALEDOWN_WINDOW", "300"))
 
 DATA_VOLUME_NAME = "wangp-data"
 S3_SECRET_NAME = "studio-s3"
@@ -179,6 +186,10 @@ gpu_image = (
 # for the two worker pools.
 image_worker_image = gpu_image.env({"WANGP_WORKER_KIND": "image"})
 video_worker_image = gpu_image.env({"WANGP_WORKER_KIND": "video"})
+# Keep the snapshot helper/image layer exclusive to this experimental pool.
+singularity_worker_image = gpu_image.add_local_python_source("h3_snapshot", copy=True).env(
+    {"WANGP_WORKER_KIND": "singularity-snapshot"}
+)
 
 app = modal.App(WORKER_APP_NAME)
 
@@ -488,11 +499,15 @@ class JobCallbacks:
         self,
         job_id: str,
         on_first_progress: Callable[[], None] | None = None,
+        progress_observer: Callable[[Any], None] | None = None,
     ):
         self.job_id = job_id
         self.on_first_progress = on_first_progress
+        self.progress_observer = progress_observer
 
     def on_progress(self, progress: Any) -> None:
+        if self.progress_observer is not None:
+            self.progress_observer(progress)
         if self.on_first_progress is not None:
             callback = self.on_first_progress
             self.on_first_progress = None
@@ -543,7 +558,10 @@ class WanGPRuntime:
             self.model_family = family
         return self.session
 
-    def run(self, job_id: str, model: str, params: dict[str, Any]) -> dict[str, Any]:
+    def run(
+        self, job_id: str, model: str, params: dict[str, Any], *,
+        progress_observer: Callable[[Any], None] | None = None,
+    ) -> dict[str, Any]:
         record = job_store.get(job_id, {})
         if record.get("status") == "cancelled":
             return {"cancelled": True}
@@ -616,6 +634,7 @@ class WanGPRuntime:
                     native_task(settings),
                     callbacks=JobCallbacks(
                         job_id,
+                        progress_observer=progress_observer,
                         on_first_progress=lambda: cancel_load_trace(
                             "first_progress"
                         ),
@@ -725,6 +744,133 @@ class WanGPVideoWorker:
     @modal.method()
     def run(self, job_id: str, model: str, params: dict[str, Any]) -> dict[str, Any]:
         return self.runtime.run(job_id, model, params)
+
+
+@app.cls(
+    image=singularity_worker_image,
+    gpu="H100",
+    memory=SINGULARITY_MEMORY_MB,
+    min_containers=0,
+    max_containers=SINGULARITY_MAX_CONTAINERS,
+    scaledown_window=SINGULARITY_SCALEDOWN_WINDOW,
+    startup_timeout=STARTUP_TIMEOUT,
+    timeout=24 * 60 * 60,
+    enable_memory_snapshot=True,
+    experimental_options={"enable_gpu_snapshot": True},
+    volumes={str(DATA_ROOT): data_volume},
+    secrets=[
+        modal.Secret.from_name("huggingface-secret", required_keys=["HF_TOKEN"]),
+        studio_s3_secret,
+    ],
+)
+class WanGPSingularityWorker:
+    @modal.enter(snap=True)
+    def prepare_snapshot(self) -> None:
+        from h3_snapshot import (
+            SNAPSHOT_REVISION, emit_snapshot, make_transformer_resident,
+            memory_report, validate_transformer_residency, warm_session,
+        )
+
+        started = time.monotonic()
+        if float(SINGULARITY_PROFILE) != 1:
+            raise ValueError("Transformer-resident snapshot requires WANGP_SINGULARITY_PROFILE=1")
+        self.capture_id = str(uuid.uuid4())
+        self.snapshot_revision = SNAPSHOT_REVISION
+        emit_snapshot("initialize", capture_id=self.capture_id, revision=SNAPSHOT_REVISION)
+        self.runtime = WanGPRuntime(SINGULARITY_PROFILE)
+        self.runtime.initialize()
+        session = self.runtime._session_for(SINGULARITY_MODEL)
+        self.warmup = warm_session(session, sys.modules["wgp"], GENERATED_OUTPUT_ROOT, emit_snapshot)
+        data_volume.commit()
+        self.transformer_residency = make_transformer_resident(session, sys.modules["wgp"], emit_snapshot)
+        self.capture_memory = memory_report(sys.modules["wgp"])
+        validate_transformer_residency(self.capture_memory)
+        self.warmup["initialize_seconds"] = round(time.monotonic() - started, 3)
+        emit_snapshot("capture_ready", capture_id=self.capture_id, **self.capture_memory)
+
+    @modal.enter(snap=False)
+    def after_restore(self) -> None:
+        from h3_snapshot import (
+            emit_snapshot, loaded_state, memory_report, reseed_after_restore,
+            validate_transformer_residency,
+        )
+
+        # Observe restored memory before any placement, warmup, or generation.
+        self.restore_memory = memory_report(sys.modules["wgp"])
+        validate_transformer_residency(self.restore_memory)
+        reseed_after_restore()
+        self.boot_id = str(uuid.uuid4())
+        self.requests_served = 0
+        self.last_request = None
+        emit_snapshot("restore_residency", capture_id=self.capture_id, boot_id=self.boot_id,
+                      **self.restore_memory)
+        emit_snapshot(
+            "container_ready", capture_id=self.capture_id, boot_id=self.boot_id,
+            revision=self.snapshot_revision, **loaded_state(sys.modules["wgp"]),
+        )
+
+    @modal.method()
+    def snapshot_info(self) -> dict[str, Any]:
+        """Calling this initializes the GPU worker, including warmup if needed."""
+        from h3_snapshot import loaded_state, memory_report
+
+        return {
+            "revision": self.snapshot_revision,
+            "capture_id": self.capture_id,
+            "boot_id": self.boot_id,
+            "requests_served": self.requests_served,
+            "warmup": self.warmup,
+            "capture_memory": self.capture_memory,
+            "restore_memory": self.restore_memory,
+            "transformer_residency": self.transformer_residency,
+            "current_memory": memory_report(sys.modules["wgp"]),
+            "loaded": loaded_state(sys.modules["wgp"]),
+            "last_request": self.last_request,
+        }
+
+    @modal.method()
+    def run(self, job_id: str, model: str, params: dict[str, Any]) -> dict[str, Any]:
+        from h3_snapshot import emit_snapshot, require_singularity, track_model_loads
+
+        require_singularity(model)
+        started = time.monotonic()
+        wgp = sys.modules["wgp"]
+        previous_model = wgp.wan_model
+        first_denoising_seconds = None
+
+        def observe(progress: Any) -> None:
+            nonlocal first_denoising_seconds
+            phase = str(getattr(progress, "phase", ""))
+            step = getattr(progress, "current_step", None)
+            total = getattr(progress, "total_steps", None)
+            expected_steps = params.get("num_inference_steps")
+            if (
+                first_denoising_seconds is None and phase.startswith("inference")
+                and isinstance(step, (int, float)) and step > 0
+                and isinstance(expected_steps, int) and total == expected_steps
+                and step <= expected_steps
+            ):
+                first_denoising_seconds = round(time.monotonic() - started, 3)
+                emit_snapshot(
+                    "first_denoising_progress", job_id=job_id, boot_id=self.boot_id,
+                    elapsed_seconds=first_denoising_seconds, step=step,
+                )
+
+        emit_snapshot("request_start", job_id=job_id, boot_id=self.boot_id)
+        counts = {"load_models_calls": 0}
+        try:
+            with track_model_loads(wgp) as counts:
+                return self.runtime.run(job_id, model, params, progress_observer=observe)
+        finally:
+            self.requests_served += 1
+            self.last_request = {
+                "job_id": job_id,
+                "elapsed_seconds": round(time.monotonic() - started, 3),
+                "model_reused": wgp.wan_model is previous_model,
+                "first_denoising_seconds": first_denoising_seconds,
+                **counts,
+            }
+            emit_snapshot("request_end", boot_id=self.boot_id, **self.last_request)
 
 
 @app.function(image=gpu_image, min_containers=0, max_containers=1)

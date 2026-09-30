@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,7 @@ import modal
 from wangpt_common import (
     CATALOG_DICT_NAME,
     JOB_DICT_NAME,
+    SINGULARITY_MODEL,
     WAN_COMMIT,
     WORKER_APP_NAME,
     filter_models,
@@ -216,9 +218,14 @@ def load_deployed_catalog() -> dict[str, Any]:
     return catalog
 
 
-def generation_worker_name(kind: str) -> str:
+def generation_worker_name(kind: str, model: str = "") -> str:
     """Map catalog output kinds onto deployed GPU worker classes."""
     if kind == "video":
+        if (
+            model == SINGULARITY_MODEL
+            and os.environ.get("WANGP_SINGULARITY_SNAPSHOT", "0") == "1"
+        ):
+            return "WanGPSingularityWorker"
         return "WanGPVideoWorker"
     if kind in {"image", "audio"}:
         return "WanGPImageWorker"
@@ -292,6 +299,7 @@ def submit_generation(
         params,
     )
 
+    worker_name = generation_worker_name(resolved_kind, model)
     job_id = str(uuid.uuid4())
     timestamp = utc_now()
     record = {
@@ -300,14 +308,14 @@ def submit_generation(
         "status": "queued",
         "kind": resolved_kind,
         "model": model,
+        "worker": worker_name,
         "created_at": timestamp,
         "updated_at": timestamp,
     }
     job_store.put(job_id, record)
 
-    worker_name = generation_worker_name(resolved_kind)
-    worker = modal.Cls.from_name(WORKER_APP_NAME, worker_name)
     try:
+        worker = modal.Cls.from_name(WORKER_APP_NAME, worker_name)
         call = worker().run.spawn(job_id, model, params)
     except BaseException as exc:
         failure_time = utc_now()
@@ -560,6 +568,13 @@ def status(job_id: str) -> None:
 @app.local_entrypoint()
 def cancel(job_id: str) -> None:
     print_json(cancel_generation_job(job_id))
+
+
+@app.local_entrypoint()
+def snapshot_probe() -> None:
+    """Start/probe the deployed Singularity GPU pool; cold calls run warmup."""
+    worker = modal.Cls.from_name(WORKER_APP_NAME, "WanGPSingularityWorker")
+    print_json(worker().snapshot_info.remote())
 
 
 @app.local_entrypoint()

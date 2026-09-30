@@ -14,6 +14,7 @@ WORKER_APP_NAME = "wangpt-modal-app"
 JOB_DICT_NAME = "wangpt-modal-jobs"
 CATALOG_DICT_NAME = "wangpt-model-catalogs"
 WAN_COMMIT = "2345ae148f82740f66e82c41292dbbdd592e713d"
+SINGULARITY_MODEL = "minimax_h3_ref2va_singularity_pruned"
 DATA_ROOT = Path("/data")
 
 
