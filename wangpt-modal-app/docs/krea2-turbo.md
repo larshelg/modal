@@ -1,7 +1,7 @@
 # Krea2 Turbo request parameters
 
 `krea2_turbo` is an image model. The dispatcher therefore routes it to
-`WanGPImageWorker`, which uses the configured image GPU (`L40S` by default).
+`WanGPImageWorker`, which uses the configured image GPU (`H100` by default).
 
 ## JSON CLI
 
@@ -84,6 +84,12 @@ values does not necessarily improve the distilled model.
   value; omit it to retain the model default.
 
 ## LoRAs
+
+List the available Krea2 LoRAs without starting a container:
+
+```bash
+python3 -m modal run control.py::loras --family krea2
+```
 
 LoRAs use two aligned settings:
 

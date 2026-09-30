@@ -1,0 +1,14 @@
+{
+  "prompt": "change the pose of the couple from image 1, the woman should be on her knees, the man should be standing on the left side of the frame, the man's penis should be outside the woman's mouth, her mouth should be open and her tounge should be strechted out and rest on the top of the man's penishead, keep the width and details of the penis intact from image 1",
+  "video_prompt_type": "KI",
+  "image_refs": [
+    "s3://bucket-rlnfehwax8alyao51e/runninghub/wangp/c0b167eb-e0e9-5047-8d04-833fe64e9d2f/000-2026-09-20-17h54m52s_seed67643590_kreablowjob%2C%20linda%20sitting%20on%20her%20knees%20nude%2C%20on%20the%20left%20side%20a%20man%20is%20standing%20and%20his%20penis%20is%20in.jpg"
+  ],
+  "image_mode": 1,
+  "resolution": "832x480",
+  "num_inference_steps": 40,
+  "guidance_scale": 4.0,
+  "flow_shift": 5.0,
+  "sample_solver": "default",
+  "seed": -1
+}

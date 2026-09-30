@@ -1,0 +1,22 @@
+{
+  "model": {
+    "name": "MiniMax H3 Singularity v1.3 Ref2VA Pruned 20B (4-Step)",
+    "architecture": "minimax_h3_ref2va_pruned",
+    "description": "WarmBloodAban Singularity v1.3 pruned INT8 checkpoint with the LightX2V Ref2V 4-step accelerator.",
+    "URLs": [
+      "https://huggingface.co/WarmBloodAban/Minimax-h3_Singularity/resolve/af671d9214a6e41ab8c2f43e9f871ea56246115f/Minimax-h3_Singularity_ref2va_Pruned_v1.3_int8.safetensors"
+    ],
+    "loras": [
+      "https://huggingface.co/DeepBeepMeep/MiniMax-H3/resolve/7b61c8edb895aaf25b248f064e9726ffdcc7ec46/loras/minimax_h3_lightx2v_ref2v_turbo_4step_alpha8_v0.1_bf16.safetensors"
+    ],
+    "loras_multipliers": [1.0]
+  },
+  "resolution": "832x480",
+  "video_length": 124,
+  "num_inference_steps": 4,
+  "sample_solver": "euler",
+  "flow_shift": 12.0,
+  "guidance_scale": 1.0,
+  "guidance_phases": 1,
+  "seed": -1
+}

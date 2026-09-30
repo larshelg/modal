@@ -1,0 +1,46 @@
+{
+  "prompt": "summary: A red fox walks through fresh snow in a quiet pine forest.\ndetailed_description: [Shot 1] A single red fox with orange fur, black legs, and a white-tipped tail walks slowly from left to right through shallow snow. One continuous medium-wide shot with a steady camera. Natural winter daylight, coherent anatomy, visible pawprints.\noverall_soundscape: Soft footsteps in snow and gentle wind through pine trees.\nnon_diegetic_music: None.",
+  "resolution": "832x480",
+  "video_length": 124,
+  "num_inference_steps": 4,
+  "sample_solver": "euler",
+  "flow_shift": 12.0,
+  "guidance_scale": 1.0,
+  "guidance_phases": 1,
+  "seed": 43,
+  "force_fps": "24",
+  "sliding_window_size": 124,
+  "sliding_window_overlap": 1,
+  "keep_frames_video_source": "",
+  "sliding_window_color_correction_strength": 0,
+  "film_grain_intensity": 0,
+  "plugin_data": {
+    "h3_latent_prototype": {
+      "save": true,
+      "continue": true,
+      "join_mode": "baseline",
+      "latent_path": "s3://bucket-rlnfehwax8alyao51e/runninghub/wangp/27db2109-da3d-4dbb-a5a6-9722009a27f0/001-2026-09-21-21h01m38s_seed42_summary A red fox walks through fresh snow in a quiet pine forest.detailed_description [Shot 1] A.safetensors"
+    }
+  },
+  "image_prompt_type": "V",
+  "video_source": "s3://bucket-rlnfehwax8alyao51e/runninghub/wangp/27db2109-da3d-4dbb-a5a6-9722009a27f0/000-2026-09-21-21h01m38s_seed42_summary A red fox walks through fresh snow in a quiet pine forest.detailed_description [Shot 1] A.mp4"
+}
+
+Those control how much saved history the plugin uses when continuing a clip. I checked the pinned
+  0.3.4 source.
+
+  - video_context_frames: accepts 18, 35, or 52, default 35. Selects saved video latent history. At 24
+    FPS, that’s approximately 0.75, 1.46, or 2.17 seconds.
+
+  - audio_context_seconds: accepts 0.5, 1.0, or 2.0, default 1.0. Selects saved audio history.
+  - join_mode: accepts the three modes below; default "baseline". Parameter definitions
+
+  The modes behave as follows:
+
+  - "baseline" — ignores both context controls. Uses at least 18 frames of history when available, or
+    more if the native overlap is larger.
+
+  - "context" — uses your selected video and audio history to condition the continuation.
+  - "audio_prefix" — uses extended video history and freezes the preceding audio latents during
+    generation. It decodes the old audio prefix and new audio together, then removes the prefix, aiming
+    to reduce the audible seam. Requires No Skipping and no additional audio guides.

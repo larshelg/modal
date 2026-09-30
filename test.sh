@@ -1,0 +1,2 @@
+python3 -m modal run wangpt-modal-app/control.py::krea \
+  --params-json '{"prompt":"linda on a beach","activated_loras":["/data/loras/krea2/linda_krea2_v1.safetensors","/data/loras/krea2/Krea2_TextFusion_Refusal_Reduction.safetensors"],"loras_multipliers":"0.8,1.0"}'

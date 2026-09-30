@@ -10,8 +10,19 @@ import shutil
 import sys
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import unquote, urlsplit
 
 import modal
+
+from h3_latent import (
+    PLUGIN_COMMIT,
+    PLUGIN_KEY,
+    PLUGIN_ROOT,
+    include_latent_outputs,
+    install_headless_hooks,
+    native_task,
+    prepare_latent_job,
+)
 
 from wangpt_common import (
     CATALOG_DICT_NAME,
@@ -27,14 +38,15 @@ from wangpt_common import (
 WAN_ROOT = Path("/opt/Wan2GP")
 WAN2AI_ROOT = Path("/opt/Wan2AI")
 GENERATED_OUTPUT_ROOT = Path("/tmp/wangp-outputs")
+S3_INPUT_ROOT = Path("/tmp/wangp-inputs")
 CATALOG_PATH = Path("/opt/wangp-catalog.json")
 WAN2AI_COMMIT = "2539c3a87b64fa0f619695f02410fc92c63cba7d"
 
 IMAGE_GPU_TYPE = os.environ.get(
     "WANGP_IMAGE_GPU",
-    os.environ.get("WANGP_GPU", "L40S"),
+    os.environ.get("WANGP_GPU", "H100"),
 )
-VIDEO_GPU_TYPE = os.environ.get("WANGP_VIDEO_GPU", "A100")
+VIDEO_GPU_TYPE = os.environ.get("WANGP_VIDEO_GPU", "H100")
 IMAGE_MAX_CONTAINERS = int(
     os.environ.get(
         "WANGP_IMAGE_MAX_CONTAINERS",
@@ -64,6 +76,16 @@ S3_REQUIRED_KEYS = (
 S3_OUTPUT_PREFIX = (
     os.environ.get("WANGP_S3_OUTPUT_PREFIX", "runninghub/wangp").strip("/")
     or "runninghub/wangp"
+)
+S3_INPUT_MAX_BYTES = int(
+    os.environ.get("WANGP_S3_INPUT_MAX_BYTES", str(128 * 1024 * 1024))
+)
+S3_IMAGE_INPUT_KEYS = (
+    "image_start",
+    "image_end",
+    "image_guide",
+    "image_mask",
+    "image_refs",
 )
 
 CACHE_DIRS = (
@@ -132,8 +154,25 @@ gpu_image = (
         remote_path="/opt/generate_catalog.py",
         copy=True,
     )
+    .add_local_dir(
+        str(Path(__file__).with_name("finetunes")),
+        remote_path=str(WAN_ROOT / "finetunes"),
+        copy=True,
+    )
     .run_commands("python /opt/generate_catalog.py")
-    .add_local_python_source("wangpt_common", copy=True)
+    .run_commands(
+        f"git clone https://github.com/g3n3rativ3/wan2gp-h3-latent-continue.git {PLUGIN_ROOT}",
+        f"cd {PLUGIN_ROOT} && git checkout {PLUGIN_COMMIT}",
+    )
+    .add_local_file(
+        str(Path(__file__).with_name("patches") / "h3-latent-mux.patch"),
+        remote_path="/opt/h3-latent-mux.patch",
+        copy=True,
+    )
+    .run_commands(
+        f"cd {WAN_ROOT} && git apply --check /opt/h3-latent-mux.patch && git apply /opt/h3-latent-mux.patch",
+    )
+    .add_local_python_source("wangpt_common", "h3_latent", "h3_mux", copy=True)
 )
 
 # Share the expensive WanGP build layers while keeping independent Modal images
@@ -224,6 +263,133 @@ def sha256_file(path: Path) -> tuple[str, int]:
             digest.update(chunk)
             size += len(chunk)
     return digest.hexdigest(), size
+
+
+def parse_s3_uri(uri: str, configured_bucket: str) -> tuple[str, str]:
+    """Parse one bucket-scoped S3 URI without accepting URL decorations."""
+    parsed = urlsplit(uri)
+    if parsed.scheme != "s3" or not parsed.netloc:
+        raise ValueError("S3 image input must use s3://BUCKET/KEY")
+    if (
+        parsed.query
+        or parsed.fragment
+        or parsed.username
+        or parsed.password
+        or parsed.port
+    ):
+        raise ValueError(
+            "S3 image input URI must not contain credentials, query, or fragment"
+        )
+    bucket = parsed.hostname or ""
+    if bucket != configured_bucket:
+        raise ValueError("S3 image input bucket does not match configured S3_BUCKET")
+    key = unquote(parsed.path.removeprefix("/"))
+    if not key or key.endswith("/") or "\x00" in key:
+        raise ValueError("S3 image input URI must contain an object key")
+    return bucket, key
+
+
+def _s3_input_destination(input_dir: Path, index: int, uri: str, key: str) -> Path:
+    suffix = Path(key).suffix.lower()
+    if not (
+        suffix.startswith(".")
+        and 1 < len(suffix) <= 12
+        and suffix[1:].isascii()
+        and suffix[1:].isalnum()
+    ):
+        suffix = ""
+    uri_digest = hashlib.sha256(uri.encode("utf-8")).hexdigest()[:16]
+    return input_dir / f"{index:03d}-{uri_digest}{suffix}"
+
+
+def download_s3_input(
+    client: Any,
+    uri: str,
+    configured_bucket: str,
+    destination: Path,
+    max_bytes: int = S3_INPUT_MAX_BYTES,
+) -> Path:
+    """Download and verify one S3 input before exposing it to WanGP."""
+    bucket, key = parse_s3_uri(uri, configured_bucket)
+    head = client.head_object(Bucket=bucket, Key=key)
+    expected_size = int(head.get("ContentLength", -1))
+    if expected_size <= 0:
+        raise ValueError("S3 image input must not be empty")
+    if expected_size > max_bytes:
+        raise ValueError(
+            f"S3 image input exceeds the {max_bytes}-byte download limit"
+        )
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    partial = destination.with_suffix(destination.suffix + ".part")
+    try:
+        with partial.open("wb") as stream:
+            client.download_fileobj(bucket, key, stream)
+        digest, actual_size = sha256_file(partial)
+        if actual_size != expected_size:
+            raise ValueError("S3 image input failed size verification")
+        expected_digest = head.get("Metadata", {}).get("sha256")
+        if expected_digest and digest != expected_digest:
+            raise ValueError("S3 image input failed SHA-256 verification")
+        partial.replace(destination)
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
+    return destination
+
+
+def materialize_s3_image_inputs(
+    params: dict[str, Any],
+    job_id: str,
+    client: Any,
+    configured_bucket: str,
+    root: Path = S3_INPUT_ROOT,
+) -> tuple[dict[str, Any], Path | None, int]:
+    """Download image inputs and the original video/checkpoint for continuation."""
+    settings = dict(params)
+    input_dir = root / hashlib.sha256(job_id.encode("utf-8")).hexdigest()[:32]
+    download_count = 0
+
+    def materialize(value: Any) -> Any:
+        nonlocal download_count
+        if isinstance(value, list):
+            return [materialize(item) for item in value]
+        if not (isinstance(value, str) and value.startswith("s3://")):
+            return value
+        _, key = parse_s3_uri(value, configured_bucket)
+        destination = _s3_input_destination(
+            input_dir,
+            download_count,
+            value,
+            key,
+        )
+        download_count += 1
+        return str(
+            download_s3_input(
+                client,
+                value,
+                configured_bucket,
+                destination,
+            )
+        )
+
+    try:
+        for key in S3_IMAGE_INPUT_KEYS:
+            if key in settings:
+                settings[key] = materialize(settings[key])
+        if "video_source" in settings:
+            settings["video_source"] = materialize(settings["video_source"])
+        if PLUGIN_KEY in settings.get("plugin_data", {}):
+            data = dict(settings["plugin_data"])
+            options = dict(data[PLUGIN_KEY])
+            if "latent_path" in options:
+                options["latent_path"] = materialize(options["latent_path"])
+            data[PLUGIN_KEY] = options
+            settings["plugin_data"] = data
+    except BaseException:
+        shutil.rmtree(input_dir, ignore_errors=True)
+        raise
+    return settings, input_dir if download_count else None, download_count
 
 
 def upload_output_artifacts(
@@ -346,6 +512,7 @@ class WanGPRuntime:
     def initialize(self) -> None:
         _ensure_cache_layout()
         GENERATED_OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
+        S3_INPUT_ROOT.mkdir(parents=True, exist_ok=True)
         for name in ("ckpts", "settings", "loras"):
             _force_directory_symlink(WAN_ROOT / name, DATA_ROOT / name)
         # Generated images and videos are deliberately container-local. They
@@ -356,12 +523,16 @@ class WanGPRuntime:
     def _new_session(self) -> Any:
         from shared.api import init
 
-        return init(
+        session = init(
             root=WAN_ROOT,
             output_dir=GENERATED_OUTPUT_ROOT,
             cli_args=["--profile", self.profile, "--attention", "sdpa"],
             console_output=True,
         )
+        # Install the identity loader before any model is cached by this process,
+        # including ordinary jobs followed by a latent-enabled job on a warm worker.
+        install_headless_hooks(sys.modules["wgp"])
+        return session
 
     def _session_for(self, model: str) -> Any:
         family = model.split("_", 1)[0]
@@ -379,6 +550,7 @@ class WanGPRuntime:
         record.update(status="running", started_at=utc_now(), updated_at=utc_now())
         job_store.put(job_id, record)
 
+        input_dir: Path | None = None
         try:
             # Fresh containers receive the current Volume snapshot. Warm WanGP
             # workers intentionally keep checkpoint files open, which makes a
@@ -403,6 +575,23 @@ class WanGPRuntime:
                 )
 
             try:
+                s3_settings = s3_settings_from_env()
+                s3_client = create_s3_client(s3_settings)
+                materialized_params, input_dir, input_count = (
+                    materialize_s3_image_inputs(
+                        validate_job_request(model, params),
+                        job_id,
+                        s3_client,
+                        s3_settings["S3_BUCKET"],
+                    )
+                )
+                if input_count:
+                    log_runtime_stage(
+                        job_id,
+                        "s3_inputs_ready",
+                        count=input_count,
+                        model=model,
+                    )
                 if MODEL_LOAD_TRACE_INTERVAL_SECONDS > 0:
                     faulthandler.dump_traceback_later(
                         MODEL_LOAD_TRACE_INTERVAL_SECONDS,
@@ -420,11 +609,11 @@ class WanGPRuntime:
                 session = self._session_for(model)
                 log_runtime_stage(job_id, "session_ready", model=model)
                 settings = session.get_default_settings(model).copy()
-                settings.update(validate_job_request(model, params))
-                settings["_api"] = {"return_media": False}
+                settings.update(materialized_params)
+                prepare_latent_job(sys.modules["wgp"], settings)
                 log_runtime_stage(job_id, "submit_start", model=model)
                 job = session.submit_task(
-                    settings,
+                    native_task(settings),
                     callbacks=JobCallbacks(
                         job_id,
                         on_first_progress=lambda: cancel_load_trace(
@@ -438,8 +627,7 @@ class WanGPRuntime:
             finally:
                 cancel_load_trace("task_boundary_exit")
             log_runtime_stage(job_id, "result_ready", model=model, success=result.success)
-            s3_settings = s3_settings_from_env()
-            s3_client = create_s3_client(s3_settings)
+            include_latent_outputs(result, settings)
             log_runtime_stage(job_id, "s3_upload_start", model=model)
             outputs = upload_output_artifacts(
                 result,
@@ -482,6 +670,9 @@ class WanGPRuntime:
                 )
                 job_store.put(job_id, record)
             raise
+        finally:
+            if input_dir is not None:
+                shutil.rmtree(input_dir, ignore_errors=True)
 
 
 @app.cls(

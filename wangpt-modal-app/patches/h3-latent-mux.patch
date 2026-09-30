@@ -1,0 +1,45 @@
+--- a/shared/utils/audio_video.py
++++ b/shared/utils/audio_video.py
+@@ -548,8 +548,11 @@
+     new_audio_from_start=False,
+     source_audio_metadata=None,
+     audio_codec_key="aac_128",
+-    verbose = False
++    verbose = False,
++    *, video_duration=None
+ ):
++    if video_duration is not None and not 0 < video_duration < float("inf"):
++        raise ValueError("video_duration must be finite and positive")
+     audio_settings = get_mp4_audio_codec_settings(audio_codec_key)
+     audio_codec = audio_settings["codec"]
+     audio_bitrate = audio_settings["bitrate"]
+@@ -613,7 +616,16 @@
+             else:
+                 filters.append(f'[s{i}]apad=pad_dur=100[aout{i}]')
+ 
+-        maps += ['-map', f'[aout{i}]']
++        if video_duration is not None:
++            # Bound every audio track to the video timeline. Ending at the shortest
++            # stream can drop reordered video packets during stream-copy muxing.
++            samples = max(1, round(video_duration * audio_sampling_rate))
++            filters.append(
++                f'[aout{i}]aresample={audio_sampling_rate},apad=whole_len={samples},'
++                f'atrim=end_sample={samples},asetpts=PTS-STARTPTS[abounded{i}]')
++            maps += ['-map', f'[abounded{i}]']
++        else:
++            maps += ['-map', f'[aout{i}]']
+ 
+     cmd = [_ffmpeg_binary(), '-y', *inputs,
+            '-filter_complex', ';'.join(filters),  # ✅ Only change made
+@@ -621,9 +633,9 @@
+            '-c:v', 'copy',
+            '-c:a', audio_codec,
+            '-ar', str(audio_sampling_rate),
+-           '-shortest', save_path_tmp]
++           *(['-shortest'] if video_duration is None else []), save_path_tmp]
+     if audio_bitrate:
+-        cmd[-4:-4] = ['-b:a', audio_bitrate]
++        cmd[-1:-1] = ['-b:a', audio_bitrate]
+ 
+     if verbose:
+         print(f"ffmpeg command: {cmd}")

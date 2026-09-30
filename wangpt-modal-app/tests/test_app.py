@@ -1,3 +1,4 @@
+import hashlib
 import inspect
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,6 +10,9 @@ import control
 from app import (
     JobCallbacks,
     canonical_output_path,
+    download_s3_input,
+    materialize_s3_image_inputs,
+    parse_s3_uri,
     remove_local_outputs,
     s3_settings_from_env,
     serialize_result,
@@ -67,6 +71,10 @@ def test_request_rejects_reserved_api_metadata():
 
 def test_data_paths_accept_data_volume_and_virtual_suffix():
     validate_data_paths({"video_guide": "/data/inputs/a.mp4|start_frame=1,end_frame=2"})
+
+
+def test_data_paths_accept_s3_uri_for_worker_materialization():
+    validate_data_paths({"image_start": "s3://bucket/inputs/start.png"})
 
 
 def test_data_paths_reject_outside_volume():
@@ -153,6 +161,92 @@ def test_s3_settings_require_all_keys_without_exposing_values():
     with pytest.raises(RuntimeError, match="S3_REGION") as caught:
         s3_settings_from_env(values)
     assert values["S3_SECRET_ACCESS_KEY"] not in str(caught.value)
+
+
+def test_s3_input_uri_is_limited_to_configured_bucket():
+    assert parse_s3_uri(
+        "s3://studio-bucket/inputs/start%20frame.png",
+        "studio-bucket",
+    ) == ("studio-bucket", "inputs/start frame.png")
+
+    with pytest.raises(ValueError, match="configured S3_BUCKET"):
+        parse_s3_uri("s3://other-bucket/start.png", "studio-bucket")
+    with pytest.raises(ValueError, match="query"):
+        parse_s3_uri("s3://studio-bucket/start.png?versionId=1", "studio-bucket")
+
+
+class FakeInputS3:
+    def __init__(self, objects):
+        self.objects = objects
+        self.downloads = []
+
+    def head_object(self, Bucket, Key):
+        item = self.objects[(Bucket, Key)]
+        return {
+            "ContentLength": item.get("reported_size", len(item["body"])),
+            "Metadata": item.get("metadata", {}),
+        }
+
+    def download_fileobj(self, bucket, key, stream):
+        self.downloads.append((bucket, key))
+        stream.write(self.objects[(bucket, key)]["body"])
+
+
+def test_materialize_s3_image_inputs_downloads_supported_fields(tmp_path):
+    start = b"start-image"
+    reference = b"reference-image"
+    client = FakeInputS3(
+        {
+            ("bucket", "inputs/start image.png"): {
+                "body": start,
+                "metadata": {"sha256": hashlib.sha256(start).hexdigest()},
+            },
+            ("bucket", "inputs/reference.jpg"): {"body": reference},
+        }
+    )
+    params = {
+        "image_start": "s3://bucket/inputs/start%20image.png",
+        "image_refs": ["s3://bucket/inputs/reference.jpg"],
+        "prompt": "A literal s3://bucket/example string is not an image parameter",
+    }
+
+    settings, input_dir, count = materialize_s3_image_inputs(
+        params,
+        "job-id",
+        client,
+        "bucket",
+        root=tmp_path,
+    )
+
+    assert count == 2
+    assert input_dir is not None
+    assert Path(settings["image_start"]).read_bytes() == start
+    assert Path(settings["image_start"]).suffix == ".png"
+    assert Path(settings["image_refs"][0]).read_bytes() == reference
+    assert settings["prompt"] == params["prompt"]
+    assert params["image_start"] == "s3://bucket/inputs/start%20image.png"
+    assert client.downloads == [
+        ("bucket", "inputs/start image.png"),
+        ("bucket", "inputs/reference.jpg"),
+    ]
+
+
+def test_download_s3_input_removes_partial_on_verification_failure(tmp_path):
+    client = FakeInputS3(
+        {("bucket", "start.png"): {"body": b"image", "reported_size": 6}}
+    )
+    destination = tmp_path / "start.png"
+
+    with pytest.raises(ValueError, match="size verification"):
+        download_s3_input(
+            client,
+            "s3://bucket/start.png",
+            "bucket",
+            destination,
+        )
+
+    assert not destination.exists()
+    assert not (tmp_path / "start.png.part").exists()
 
 
 def test_upload_outputs_returns_verified_s3_uri_then_local_file_can_be_removed(
@@ -331,6 +425,174 @@ def test_krea_submit_requires_prompt():
         control.submit_krea_generation({"seed": -1})
 
 
+@pytest.mark.parametrize(
+    ("variant", "expected_model"),
+    [
+        ("full", "minimax_h3_vdn"),
+        ("pruned", "minimax_h3_vdn_pruned"),
+    ],
+)
+def test_h3_vdn_submit_selects_variant_and_applies_defaults(
+    monkeypatch,
+    variant,
+    expected_model,
+):
+    captured = {}
+
+    def fake_submit(model, params, kind):
+        captured.update(model=model, params=params, kind=kind)
+        return {"id": "job", "status": "queued", "kind": kind}
+
+    monkeypatch.setattr(control, "submit_generation", fake_submit)
+
+    result = control.submit_h3_vdn_generation(
+        {"prompt": "astronaut", "seed": 42},
+        variant,
+    )
+
+    assert result == {"id": "job", "status": "queued", "kind": "video"}
+    assert captured["model"] == expected_model
+    assert captured["kind"] == "video"
+    assert captured["params"] == {
+        **control.H3_VDN_DEFAULTS,
+        "prompt": "astronaut",
+        "seed": 42,
+    }
+    assert "activated_loras" not in captured["params"]
+
+
+def test_h3_vdn_submit_requires_prompt_and_known_variant():
+    with pytest.raises(ValueError, match="params.prompt"):
+        control.submit_h3_vdn_generation({"seed": -1})
+    with pytest.raises(ValueError, match="full, pruned"):
+        control.submit_h3_vdn_generation({"prompt": "astronaut"}, "other")
+
+
+def test_h3_vdn_submit_enables_native_audio_refinement(monkeypatch):
+    captured = {}
+
+    def fake_submit(model, params, kind):
+        captured.update(model=model, params=params, kind=kind)
+        return {"id": "job", "status": "queued", "kind": kind}
+
+    monkeypatch.setattr(control, "submit_generation", fake_submit)
+
+    control.submit_h3_vdn_generation(
+        {"prompt": "astronaut", "audio_refinement": " ENABLED "}
+    )
+
+    assert captured["params"]["audio_refinement"] == "enabled"
+
+
+@pytest.mark.parametrize("value", [True, "six_steps", ""])
+def test_h3_vdn_submit_rejects_invalid_audio_refinement(value):
+    with pytest.raises(ValueError, match="audio_refinement"):
+        control.submit_h3_vdn_generation(
+            {"prompt": "astronaut", "audio_refinement": value}
+        )
+
+
+def test_audio_refinement_is_nested_for_supported_h3_model():
+    catalog = {
+        "defaults": {
+            "minimax_h3_vdn": {
+                "custom_settings": {
+                    "audio_refinement": "none",
+                    "h3_mask_mode": "grouped_rows",
+                }
+            }
+        }
+    }
+
+    assert control.normalize_audio_refinement(
+        catalog,
+        "minimax_h3_vdn",
+        {
+            "prompt": "astronaut",
+            "audio_refinement": " ENABLED ",
+            "custom_settings": {"h3_mask_mode": "shared_timestep"},
+        },
+    ) == {
+        "prompt": "astronaut",
+        "custom_settings": {
+            "audio_refinement": "enabled",
+            "h3_mask_mode": "shared_timestep",
+        },
+    }
+
+
+def test_audio_refinement_rejects_models_without_catalog_support():
+    catalog = {"defaults": {"krea2_turbo": {"custom_settings": None}}}
+
+    with pytest.raises(ValueError, match="does not support audio refinement"):
+        control.normalize_audio_refinement(
+            catalog,
+            "krea2_turbo",
+            {"prompt": "fox", "audio_refinement": "enabled"},
+        )
+
+
+def test_audio_refinement_rejects_conflicting_native_setting():
+    catalog = {
+        "defaults": {
+            "minimax_h3_vdn": {
+                "custom_settings": {"audio_refinement": "none"}
+            }
+        }
+    }
+
+    with pytest.raises(ValueError, match="conflicts"):
+        control.normalize_audio_refinement(
+            catalog,
+            "minimax_h3_vdn",
+            {
+                "audio_refinement": "enabled",
+                "custom_settings": {"audio_refinement": "none"},
+            },
+        )
+
+
+def test_h3_vdn_help_describes_preset_and_automatic_lora():
+    assert control.H3_VDN_HELP["models"] == {
+        "full": "minimax_h3_vdn",
+        "pruned": "minimax_h3_vdn_pruned",
+    }
+    assert control.H3_VDN_HELP["params_json"]["defaults"] == {
+        **control.H3_VDN_DEFAULTS
+    }
+    assert "automatically loaded" in control.H3_VDN_HELP["vdn_acceleration_lora"]
+    assert control.H3_VDN_HELP["params_json"]["audio_refinement"] == {
+        "type": "string",
+        "choices": ["none", "enabled"],
+        "enabled_effect": "6 extra steps at denoising strength 0.5",
+    }
+    assert control.H3_VDN_HELP["h3_common"] is control.H3_HELP
+
+
+def test_h3_help_documents_model_aware_sliding_windows():
+    sliding = control.H3_HELP["sliding_windows"]
+
+    assert control.H3_HELP["family"] == "minimax_h3"
+    assert "--family h3" in control.H3_HELP["discover_models_command"]
+    assert sliding["activation"] == (
+        "video_length must be greater than sliding_window_size"
+    )
+    assert sliding["settings"]["multi_prompts_gen_type"] == {
+        "FG": "reuse one complete prompt for every window",
+        "PW": "use each blank-line-separated paragraph for a new window",
+    }
+    assert sliding["two_window_example"]["calculation"] == (
+        "362 + (362 - 18) = 706 frames"
+    )
+    assert "image_start anchors only the first window" in (
+        sliding["image_conditioning"]["fl2va"]
+    )
+    assert "video_prompt_type=KFI" in sliding["image_conditioning"]["vdn"]
+    assert "remain available across windows" in (
+        sliding["image_conditioning"]["ref2va"]
+    )
+
+
 def test_krea_help_describes_json_and_lora_contract():
     assert control.KREA_HELP["params_json"]["required"]["prompt"] == {
         "type": "string"
@@ -343,6 +605,45 @@ def test_krea_help_describes_json_and_lora_contract():
         ],
         "loras_multipliers": "0.8",
     }
+    assert "--family krea2" in control.KREA_HELP["list_loras_command"]
+
+
+def test_lora_listing_selects_safe_family_directory(monkeypatch):
+    calls = []
+
+    class Volume:
+        def listdir(self, path, recursive=False):
+            calls.append((path, recursive))
+            return [
+                SimpleNamespace(
+                    path="loras/krea2/example.safetensors",
+                    type=SimpleNamespace(value=1),
+                    size=123,
+                    mtime=456,
+                )
+            ]
+
+    monkeypatch.setattr(control, "data_volume", Volume())
+
+    assert control.list_loras(" krea2 ", recursive=True) == [
+        {
+            "path": "loras/krea2/example.safetensors",
+            "type": 1,
+            "size": 123,
+            "mtime": 456,
+        }
+    ]
+    assert calls == [("loras/krea2", True)]
+
+
+def test_lora_listing_rejects_path_traversal():
+    with pytest.raises(ValueError, match="family"):
+        control.lora_directory("../krea2")
+
+
+def test_h3_lora_alias_selects_minimax_h3_directory():
+    assert control.lora_directory("h3") == "loras/minimax_h3"
+    assert control.lora_directory("minimax_h3") == "loras/minimax_h3"
 
 
 def test_krea2_turbo_example_has_documented_baseline():
@@ -383,3 +684,27 @@ def test_catalog_cache_hit_does_not_start_catalog_publisher(monkeypatch):
     monkeypatch.setattr(control.modal.Function, "from_name", fail_if_called)
 
     assert control.load_deployed_catalog() is catalog
+
+
+@pytest.mark.parametrize(
+    ("operation", "expected"),
+    [("defaults", {"seed": -1}), ("schema", {"prompt": {"type": "string"}})],
+)
+def test_catalog_inspection_uses_correct_collection(monkeypatch, operation, expected):
+    catalog = {
+        "defaults": {"model": {"seed": -1}},
+        "schemas": {"model": {"prompt": {"type": "string"}}},
+    }
+    monkeypatch.setattr(control, "load_deployed_catalog", lambda: catalog)
+
+    assert control.inspect_catalog(operation, "model") == expected
+
+
+def test_catalog_model_listing_accepts_h3_family_alias(monkeypatch):
+    vdn = {"model_type": "minimax_h3_vdn", "family": "minimax_h3"}
+    catalog = {
+        "models": [vdn, {"model_type": "krea2_turbo", "family": "krea2"}]
+    }
+    monkeypatch.setattr(control, "load_deployed_catalog", lambda: catalog)
+
+    assert control.inspect_catalog("models", family=" h3 ") == [vdn]

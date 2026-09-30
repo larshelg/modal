@@ -1,0 +1,24 @@
+{
+  "prompt": "change the womans dress into a red dress",
+  "negative_prompt": "",
+  "image_refs": [
+    "s3://bucket-rlnfehwax8alyao51e/runninghub/2089683756500725761/Krea2_T2I_00004_qxvmo_1787054425.png"
+  ],
+  "video_prompt_type": "KI",
+  "image_mode": 1,
+  "resolution": "1024x1024",
+  "num_inference_steps": 40,
+  "guidance_scale": 4.0,
+  "flow_shift": 5.0,
+  "sample_solver": "default",
+  "seed": 42,
+  "batch_size": 1,
+  "activated_loras": [
+    "/data/loras/qwen21/NSF-V2-Qwen.safetensors"
+  ],
+  "loras_multipliers": "1.0",
+  "custom_settings": {
+    "qwen21_kv_cache": "Disabled",
+    "rgba": "Disabled"
+  }
+}

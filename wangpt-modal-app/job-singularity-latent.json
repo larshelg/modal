@@ -1,0 +1,24 @@
+{
+  "prompt": "summary: A red fox walks through fresh snow in a quiet pine forest.\ndetailed_description: [Shot 1] A single red fox with orange fur, black legs, and a white-tipped tail walks slowly from left to right through shallow snow. One continuous medium-wide shot with a steady camera. Natural winter daylight, coherent anatomy, visible pawprints.\noverall_soundscape: Soft footsteps in snow and gentle wind through pine trees.\nnon_diegetic_music: None.",
+  "resolution": "832x480",
+  "video_length": 124,
+  "num_inference_steps": 4,
+  "sample_solver": "euler",
+  "flow_shift": 12.0,
+  "guidance_scale": 1.0,
+  "guidance_phases": 1,
+  "seed": 42,
+  "force_fps": "24",
+  "sliding_window_size": 124,
+  "sliding_window_overlap": 1,
+  "keep_frames_video_source": "",
+  "sliding_window_color_correction_strength": 0,
+  "film_grain_intensity": 0,
+  "plugin_data": {
+    "h3_latent_prototype": {
+      "save": true,
+      "continue": false,
+      "join_mode": "baseline"
+    }
+  }
+}

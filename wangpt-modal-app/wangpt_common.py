@@ -7,11 +7,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
+from h3_latent import validate_plugin_data
+
 
 WORKER_APP_NAME = "wangpt-modal-app"
 JOB_DICT_NAME = "wangpt-modal-jobs"
 CATALOG_DICT_NAME = "wangpt-model-catalogs"
-WAN_COMMIT = "92f56e5ee7227d490f6d85281c019e4c4e2dc393"
+WAN_COMMIT = "2345ae148f82740f66e82c41292dbbdd592e713d"
 DATA_ROOT = Path("/data")
 
 
@@ -32,6 +34,7 @@ def validate_job_request(model: str, params: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("model must not be empty")
     if "_api" in params:
         raise ValueError("params._api is reserved by the runtime")
+    validate_plugin_data(params)
     settings = dict(params)
     settings["model_type"] = model
     return settings
