@@ -1,0 +1,8 @@
+{
+  "input_url": "s3://YOUR_BUCKET/approved-h3.mp4",
+  "prompt": "A presenter explaining the weather in a television studio.",
+  "output_width": 1344,
+  "output_height": 768,
+  "seed": 303000,
+  "decoder_seed": 20260826
+}

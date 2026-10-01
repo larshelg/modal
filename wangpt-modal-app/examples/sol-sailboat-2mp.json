@@ -1,0 +1,11 @@
+{
+  "input_url": "s3://bucket-rlnfehwax8alyao51e/runninghub/wangp/1ff808bf-9f8f-4f6b-a6a9-342cabf07e0c/paper-sailboat-1mp-5s.mp4",
+  "prompt": "summary: A tiny white paper sailboat drifts across a lantern-lit rain puddle on an old cobblestone street at dusk.\ndetailed_description: [Shot 1] One continuous five-second cinematic macro shot at water level. A single neatly folded white paper sailboat glides slowly from left to right across a shallow puddle between dark wet cobblestones. Warm amber light from a small shop window shimmers in the water, contrasting with the cool blue evening sky. A few gentle raindrops create expanding circular ripples that softly rock the boat. The boat retains its crisp triangular sail and folded hull throughout. The camera makes a very slow, smooth push-in, keeping the entire boat in focus while the distant street and lantern reflections form soft bokeh. Realistic paper fibers, glossy wet stone, delicate water motion, natural exposure, and a quiet whimsical atmosphere. No people, no text, no cuts.\noverall_soundscape: Gentle rainfall, delicate drops striking the puddle, and a faint distant city murmur.\nnon_diegetic_music: None.",
+  "output_width": 1876,
+  "output_height": 1072,
+  "seed": 303000,
+  "decoder_seed": 20260826,
+  "frame_policy": "pad",
+  "generation_id": "1ff808bf-9f8f-4f6b-a6a9-342cabf07e0c",
+  "asset_id": "paper-sailboat-1mp-5s"
+}

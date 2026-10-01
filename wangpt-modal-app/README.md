@@ -1,5 +1,10 @@
 # WanGP Modal App
 
+For the **Sol-only video refiner**, use [the Sol worker guide](docs/sol-refiner.md)
+and deploy `sol_app.py`. That entrypoint has its own image, model Volume, and
+client (`sol_control.py`); it does not load WanGP. The documentation below covers
+the existing WanGP entrypoint.
+
 This project runs asynchronous WanGP image, video, and audio generation on
 Modal without an HTTP or REST layer. It consists of a deployed GPU worker app
 and a local Modal CLI:
@@ -90,6 +95,39 @@ python3 -m modal run control.py::refresh_catalog
 `WANGP_GPU` and `WANGP_MAX_CONTAINERS` remain aliases for the image worker.
 Set `WANGP_MODEL_LOAD_TRACE_INTERVAL_SECONDS=0` to disable periodic stack dumps
 during slow model loading.
+
+## Krea2 Turbo L40S snapshot worker
+
+`krea_app.py` deploys `WanGPKreaWorker` in the independent Modal app
+`wangpt-krea-modal-app`. It accepts only `krea2_turbo` and retains the existing
+`run(job_id, model, params)` contract, shared job store, and verified S3 outputs.
+It shares the pinned WanGP image build/runtime with the other workers. Deploying
+it does not redeploy the main app or invalidate its Singularity snapshots.
+
+The worker uses L40S, profile 1, 64 GiB host RAM, zero minimum containers, one
+maximum container, and a 300-second idle timeout. RAM, maximum containers, and
+idle timeout can be set before deployment with `WANGP_KREA_MEMORY_MB`,
+`WANGP_KREA_MAX_CONTAINERS`, and `WANGP_KREA_SCALEDOWN_WINDOW`.
+
+Native 1024x1024, eight-step warmup runs privately before capture. After joined
+task cleanup, MMGP reloads only the transformer to CUDA; text encoder and VAE
+remain loaded in CPU memory. Capture and immediate restore validate full tensor
+placement and the L40S device. The restore hook never reloads weights to hide a
+failed restoration. Per-request diagnostics report pipeline reuse and native
+model-loader calls. User LoRAs load normally during requests.
+
+```bash
+.venv/bin/python -m modal deploy krea_app.py
+python3 -m modal run control.py::krea_snapshot_probe
+WANGP_KREA_SNAPSHOT=1 python3 -m modal run control.py::submit \
+  --model krea2_turbo --kind image --params-file examples/krea2_turbo.json
+```
+
+The CLI flag is opt-in and affects only the exact image model `krea2_turbo`;
+other models, including `krea2_turbo_edit`, retain their normal routes. A direct
+TypeScript client can look up `WanGPKreaWorker` in `wangpt-krea-modal-app` and call
+`run` with its existing job ID, model, and native parameters. No CLI flag is
+needed for direct class calls. See [Krea validation](docs/krea-snapshot.md).
 
 ## Singularity GPU snapshot experiment
 

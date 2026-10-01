@@ -1,0 +1,11 @@
+{
+  "prompt": "summary: A tiny white paper sailboat drifts across a lantern-lit rain puddle on an old cobblestone street at dusk.\ndetailed_description: [Shot 1] One continuous five-second cinematic macro shot at water level. A single neatly folded white paper sailboat glides slowly from left to right across a shallow puddle between dark wet cobblestones. Warm amber light from a small shop window shimmers in the water, contrasting with the cool blue evening sky. A few gentle raindrops create expanding circular ripples that softly rock the boat. The boat retains its crisp triangular sail and folded hull throughout. The camera makes a very slow, smooth push-in, keeping the entire boat in focus while the distant street and lantern reflections form soft bokeh. Realistic paper fibers, glossy wet stone, delicate water motion, natural exposure, and a quiet whimsical atmosphere. No people, no text, no cuts.\noverall_soundscape: Gentle rainfall, delicate drops striking the puddle, and a faint distant city murmur.\nnon_diegetic_music: None.",
+  "resolution": "1344x768",
+  "video_length": 124,
+  "num_inference_steps": 4,
+  "sample_solver": "euler",
+  "flow_shift": 12.0,
+  "guidance_scale": 1.0,
+  "guidance_phases": 1,
+  "seed": -1
+}

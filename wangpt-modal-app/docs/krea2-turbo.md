@@ -2,6 +2,9 @@
 
 `krea2_turbo` is an image model. The dispatcher therefore routes it to
 `WanGPImageWorker`, which uses the configured image GPU (`H100` by default).
+Set `WANGP_KREA_SNAPSHOT=1` in the local client to route this exact model to
+`WanGPKreaWorker` on L40S in `wangpt-krea-modal-app`; see
+[snapshot setup and validation](krea-snapshot.md).
 
 ## JSON CLI
 

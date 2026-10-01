@@ -1,0 +1,14 @@
+# NVIDIA MiniMax-H3 reference environment; runtime is Linux x86_64 / Python 3.12.
+torch==2.9.1+cu126
+torchvision==0.24.1+cu126
+diffusers @ git+https://github.com/huggingface/diffusers.git@e0abab83b5df05de9e7abd788643c1a7c1e42e28
+huggingface-hub>=1.32.0,<2
+transformers>=5.12.1,<6
+accelerate>=1.14.0
+safetensors>=0.8.0
+av
+imageio
+imageio-ffmpeg
+sentencepiece
+boto3>=1.40,<2
+# NATTEN's matching binary wheel is installed separately without dependency changes.

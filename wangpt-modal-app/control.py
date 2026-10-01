@@ -27,6 +27,7 @@ from wangpt_common import (
 
 DATA_VOLUME_NAME = "wangp-data"
 KREA_MODEL = "krea2_turbo"
+KREA_WORKER_APP_NAME = "wangpt-krea-modal-app"
 H3_VDN_MODELS = {
     "full": "minimax_h3_vdn",
     "pruned": "minimax_h3_vdn_pruned",
@@ -220,6 +221,8 @@ def load_deployed_catalog() -> dict[str, Any]:
 
 def generation_worker_name(kind: str, model: str = "") -> str:
     """Map catalog output kinds onto deployed GPU worker classes."""
+    if kind == "image" and model == KREA_MODEL and os.environ.get("WANGP_KREA_SNAPSHOT", "0") == "1":
+        return "WanGPKreaWorker"
     if kind == "video":
         if (
             model == SINGULARITY_MODEL
@@ -300,6 +303,7 @@ def submit_generation(
     )
 
     worker_name = generation_worker_name(resolved_kind, model)
+    worker_app = KREA_WORKER_APP_NAME if worker_name == "WanGPKreaWorker" else WORKER_APP_NAME
     job_id = str(uuid.uuid4())
     timestamp = utc_now()
     record = {
@@ -309,13 +313,14 @@ def submit_generation(
         "kind": resolved_kind,
         "model": model,
         "worker": worker_name,
+        "worker_app": worker_app,
         "created_at": timestamp,
         "updated_at": timestamp,
     }
     job_store.put(job_id, record)
 
     try:
-        worker = modal.Cls.from_name(WORKER_APP_NAME, worker_name)
+        worker = modal.Cls.from_name(worker_app, worker_name)
         call = worker().run.spawn(job_id, model, params)
     except BaseException as exc:
         failure_time = utc_now()
@@ -574,6 +579,13 @@ def cancel(job_id: str) -> None:
 def snapshot_probe() -> None:
     """Start/probe the deployed Singularity GPU pool; cold calls run warmup."""
     worker = modal.Cls.from_name(WORKER_APP_NAME, "WanGPSingularityWorker")
+    print_json(worker().snapshot_info.remote())
+
+
+@app.local_entrypoint()
+def krea_snapshot_probe() -> None:
+    """Probe the dedicated deployed L40S Krea snapshot pool."""
+    worker = modal.Cls.from_name(KREA_WORKER_APP_NAME, "WanGPKreaWorker")
     print_json(worker().snapshot_info.remote())
 
 
