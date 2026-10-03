@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Authenticated client for the project's Fizgig and WanGP REST API."""
+"""Legacy REST compatibility client.
+
+New training uses fizgig-modal-app/control.py; new generation uses
+wangpt-modal-app/control.py. Both call Modal directly.
+"""
 
 from __future__ import annotations
 

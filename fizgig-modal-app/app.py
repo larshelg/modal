@@ -1,8 +1,7 @@
 """Standalone Fizgig training runtime on Modal.
 
-This app is the internal execution plane for Fizgig. It deliberately exposes
-Modal functions rather than a public web endpoint; ``rest-wangpt-modal-app``
-provides the authenticated REST transport.
+This app exposes stable GPU training and CPU control functions. The local
+``control.py`` client calls the deployment directly through Modal's SDK.
 """
 
 from __future__ import annotations
@@ -14,20 +13,30 @@ import shutil
 import subprocess
 import threading
 import time
-import uuid
 from collections import deque
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import modal
 
+from fizgig_common import (
+    APP_NAME,
+    DATA_VOLUME_NAME,
+    JOB_DICT_NAME,
+    SUPPORTED_FAMILY,
+    SUPPORTED_FAMILIES,
+    SUPPORTED_PRESETS,
+    utc_now,
+    validate_component,
+    validate_training_request,
+)
 
-APP_NAME = "fizgig-modal-app"
+
 FIZGIG_REPOSITORY = "https://github.com/shootthesound/Fizgig.git"
-FIZGIG_COMMIT = "6912b8aabb64600dd9da8702c5a04c8f867f7bc2"
+FIZGIG_COMMIT = "5d5ced3739f303065ca6d13b51eb95c5ec85c00d"
 FIZGIG_ROOT = Path("/opt/Fizgig")
 FIZGIG_SCRIPTS = FIZGIG_ROOT / "src/fizgig/scripts"
+FIZGIG_FAMILY_SCRIPTS = FIZGIG_ROOT / "src/fizgig/families"
 CAPTION_SCRIPT = Path("/opt/fizgig_caption_dataset.py")
 
 DATA_ROOT = Path("/data")
@@ -37,63 +46,11 @@ DATASET_ROOT = FIZGIG_DATA_ROOT / "datasets"
 RUN_ROOT = FIZGIG_DATA_ROOT / "runs"
 LORA_ROOT = DATA_ROOT / "loras"
 
-DATA_VOLUME_NAME = "wangp-data"
-JOB_DICT_NAME = "fizgig-modal-jobs"
-
 GPU_TYPE = os.environ.get("FIZGIG_GPU", "L40S")
 MAX_CONTAINERS = int(os.environ.get("FIZGIG_MAX_CONTAINERS", "1"))
 SCALEDOWN_WINDOW = 5 * 60
 STARTUP_TIMEOUT = 30 * 60
 TRAINING_TIMEOUT = 24 * 60 * 60
-
-SUPPORTED_FAMILY = "minimax_h3"
-SUPPORTED_FAMILIES = (SUPPORTED_FAMILY, "krea2")
-SUPPORTED_PRESETS: dict[str, dict[str, Any]] = {
-    "h3_character_fast": {
-        "family": "minimax_h3",
-        "network_dim": 8,
-        "network_alpha": 8,
-        "epochs": 40,
-        "learning_rate": 2e-4,
-        "optimizer_type": "adamw",
-        "adapter_ramp": 0.0,
-    },
-    "h3_character_quality": {
-        "family": "minimax_h3",
-        "network_dim": 16,
-        "network_alpha": 16,
-        "epochs": 60,
-        "learning_rate": 2e-4,
-        "optimizer_type": "adamw",
-        "adapter_ramp": 0.003,
-    },
-    "krea2_defaults": {
-        "family": "krea2",
-        "network_dim": 32,
-        "network_alpha": 32,
-        "epochs": 30,
-        "learning_rate": 1e-4,
-        "optimizer_type": "adamw8bit",
-        "adaptive_lr": False,
-        "adaptive_lr_min": 1e-4,
-        "adaptive_lr_max": 4e-4,
-        "auto_caption": True,
-        "auto_recaption": True,
-    },
-    "krea2_ultra_fast": {
-        "family": "krea2",
-        "network_dim": 8,
-        "network_alpha": 8,
-        "epochs": 20,
-        "learning_rate": 1e-4,
-        "optimizer_type": "adamw8bit",
-        "adaptive_lr": True,
-        "adaptive_lr_min": 2e-4,
-        "adaptive_lr_max": 4e-4,
-        "auto_caption": True,
-        "auto_recaption": True,
-    },
-}
 
 MODEL_PATHS = {
     "minimax_h3": {
@@ -108,27 +65,20 @@ MODEL_PATHS = {
     },
 }
 
-_SAFE_COMPONENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _IMAGE_SUFFIXES = {".bmp", ".jpeg", ".jpg", ".png", ".webp"}
 _EPOCH_PATTERNS = (
     re.compile(r"(?i)epoch\s+(\d+)\s*/\s*(\d+)"),
     re.compile(r"(?i)epoch\s+(\d+)\s+of\s+(\d+)"),
 )
-_ALLOWED_REQUEST_KEYS = {
-    "family",
-    "dataset",
-    "output_name",
-    "preset",
-    "trigger_word",
-    "epochs",
-    "resume_from",
-}
 
 
 data_volume = modal.Volume.from_name(DATA_VOLUME_NAME, create_if_missing=True)
 job_store = modal.Dict.from_name(JOB_DICT_NAME, create_if_missing=True)
 
-control_image = modal.Image.debian_slim(python_version="3.11")
+control_image = (
+    modal.Image.debian_slim(python_version="3.11")
+    .add_local_python_source("fizgig_common", copy=True)
+)
 
 fizgig_image = (
     modal.Image.from_registry(
@@ -159,6 +109,13 @@ fizgig_image = (
         # Modal injects its runner at /pkg; registry images still need the
         # transport dependency available in the image environment.
         "python -m pip install 'grpclib>=0.4.7,<0.4.10'",
+        # Fail the image build if the pinned CLI entrypoints or their runtime
+        # imports break. --help exits before loading models or starting training.
+        f"python {FIZGIG_FAMILY_SCRIPTS}/cache.py --help > /dev/null",
+        f"python {FIZGIG_FAMILY_SCRIPTS}/train.py --help > /dev/null",
+        f"python {FIZGIG_SCRIPTS}/minimax_cache_latents.py --help > /dev/null",
+        f"python {FIZGIG_SCRIPTS}/minimax_cache_text.py --help > /dev/null",
+        f"python {FIZGIG_SCRIPTS}/minimax_train.py --help > /dev/null",
     )
     # Copy local code before declaring cache paths under the future Volume
     # mount. Otherwise the copy layer can materialize those cache directories
@@ -168,6 +125,7 @@ fizgig_image = (
         remote_path=str(CAPTION_SCRIPT),
         copy=True,
     )
+    .add_local_python_source("fizgig_common", copy=True)
     .env(
         {
             "FIZGIG_HOME": str(FIZGIG_DATA_ROOT),
@@ -189,10 +147,6 @@ fizgig_image = (
 app = modal.App(APP_NAME)
 
 
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
 def normalized_absolute_path(path: str | os.PathLike[str]) -> Path:
     """Normalize traversal without resolving Modal Volume mount internals."""
     return Path(os.path.abspath(os.path.normpath(path)))
@@ -205,83 +159,6 @@ def require_data_path(path: str | os.PathLike[str], *, root: Path = DATA_ROOT) -
     except ValueError as exc:
         raise ValueError(f"path must remain under {root}: {path}") from exc
     return normalized
-
-
-def validate_component(value: Any, field: str) -> str:
-    if not isinstance(value, str):
-        raise ValueError(f"{field} must be a string")
-    value = value.strip()
-    if not _SAFE_COMPONENT.fullmatch(value) or value in {".", ".."}:
-        raise ValueError(
-            f"{field} must contain only letters, numbers, '.', '_' or '-' and "
-            "must not contain a path"
-        )
-    return value
-
-
-def _bounded_int(value: Any, field: str, minimum: int, maximum: int) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError(f"{field} must be an integer")
-    parsed = value
-    if not minimum <= parsed <= maximum:
-        raise ValueError(f"{field} must be between {minimum} and {maximum}")
-    return parsed
-
-
-def validate_training_request(request: dict[str, Any]) -> dict[str, Any]:
-    if not isinstance(request, dict):
-        raise ValueError("request must be an object")
-    unknown = sorted(set(request) - _ALLOWED_REQUEST_KEYS)
-    if unknown:
-        raise ValueError(f"unsupported request fields: {', '.join(unknown)}")
-
-    missing = sorted(
-        field
-        for field in ("family", "dataset", "output_name", "preset")
-        if field not in request
-    )
-    if missing:
-        raise ValueError(f"missing required fields: {', '.join(missing)}")
-
-    family = request["family"]
-    if family not in SUPPORTED_FAMILIES:
-        choices = ", ".join(SUPPORTED_FAMILIES)
-        raise ValueError(f"family must be one of: {choices}")
-
-    dataset = validate_component(request["dataset"], "dataset")
-    output_name = validate_component(request["output_name"], "output_name")
-    preset_name = request["preset"]
-    if preset_name not in SUPPORTED_PRESETS:
-        choices = ", ".join(sorted(SUPPORTED_PRESETS))
-        raise ValueError(f"preset must be one of: {choices}")
-
-    preset = dict(SUPPORTED_PRESETS[preset_name])
-    if preset["family"] != family:
-        raise ValueError(f"preset {preset_name!r} does not support family {family!r}")
-    epochs = _bounded_int(request.get("epochs", preset["epochs"]), "epochs", 1, 500)
-
-    trigger_word = request.get("trigger_word")
-    if trigger_word is not None:
-        trigger_word = validate_component(trigger_word, "trigger_word")
-
-    resume_from = request.get("resume_from")
-    if resume_from is not None and resume_from != "latest":
-        resume_from = validate_component(resume_from, "resume_from")
-        if not resume_from.endswith("-state"):
-            raise ValueError("resume_from must be 'latest' or a state-directory basename")
-
-    return {
-        **preset,
-        "family": family,
-        "dataset": dataset,
-        "output_name": output_name,
-        "preset": preset_name,
-        "trigger_word": trigger_word,
-        "epochs": epochs,
-        "seed": 42,
-        "save_every_n_epochs": 1,
-        "resume_from": resume_from,
-    }
 
 
 def paths_for_request(request: dict[str, Any]) -> dict[str, Path]:
@@ -458,10 +335,14 @@ def _krea2_pipeline_commands(
                 "caching_latents",
                 [
                     python,
-                    str(FIZGIG_SCRIPTS / "krea2_cache_latents.py"),
+                    str(FIZGIG_FAMILY_SCRIPTS / "cache.py"),
+                    "--family",
+                    "krea2",
+                    "--stage",
+                    "latents",
                     "--dataset_config",
                     config,
-                    "--vae",
+                    "--model",
                     str(models["vae"]),
                     "--skip_existing",
                 ],
@@ -470,10 +351,14 @@ def _krea2_pipeline_commands(
                 "caching_text",
                 [
                     python,
-                    str(FIZGIG_SCRIPTS / "krea2_cache_text.py"),
+                    str(FIZGIG_FAMILY_SCRIPTS / "cache.py"),
+                    "--family",
+                    "krea2",
+                    "--stage",
+                    "text",
                     "--dataset_config",
                     config,
-                    "--text_encoder",
+                    "--model",
                     str(models["text_encoder"]),
                     "--skip_existing",
                 ],
@@ -483,7 +368,13 @@ def _krea2_pipeline_commands(
 
     train = [
         python,
-        str(FIZGIG_SCRIPTS / "krea2_train.py"),
+        str(FIZGIG_FAMILY_SCRIPTS / "train.py"),
+        "--family",
+        "krea2",
+        "--precision",
+        "auto",
+        "--blocks_to_swap",
+        "-1",
         "--dataset_config",
         config,
         "--dit",
@@ -528,7 +419,7 @@ def _krea2_pipeline_commands(
             ]
         )
     if request["auto_recaption"]:
-        train.append("--auto_recaption")
+        train.extend(["--auto_recaption", "--captioner", str(models["text_encoder"])])
     if request.get("trigger_word"):
         train.extend(
             [
@@ -832,8 +723,9 @@ def main(
     if not request_json:
         print(health.remote())
         return
-    request_path = Path(request_json)
-    request = json.loads(request_path.read_text(encoding="utf-8"))
-    job_id = str(uuid.uuid4())
-    call = run_training.spawn(job_id, request)
-    print(json.dumps({"id": job_id, "call_id": call.object_id, "status": "queued"}, indent=2))
+    # Keep the legacy entrypoint usable while tracking jobs through the same
+    # client as control.py. Calls target the stable deployed worker.
+    from control import submit_training
+
+    request = json.loads(Path(request_json).read_text(encoding="utf-8"))
+    print(json.dumps(submit_training(request), indent=2))

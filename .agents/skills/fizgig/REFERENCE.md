@@ -1,11 +1,22 @@
-# Fizgig REST contract
+# Fizgig direct Modal reference
 
-The protected endpoint is deployed by `rest-wangpt-modal-app`. There is
-no `/v1` prefix in the current implementation.
+## Client contract
 
-## Training
+Training uses `fizgig-modal-app/control.py`, whose local entrypoints invoke
+`fizgig-modal-app` functions through the Modal SDK. It has no remote functions
+or container image of its own. Use normal Modal SDK authentication; no REST URL
+or Modal proxy authentication headers are needed.
 
-Krea2 identity request:
+The source of truth for presets and validation is
+`fizgig-modal-app/fizgig_common.py`; pipeline construction is in
+`fizgig-modal-app/app.py`. Do not invoke upstream training scripts outside the
+worker.
+
+The request contains required `family`, `dataset`, `output_name`, and `preset`;
+optional `trigger_word` and `epochs` (integer 1–500) are the only public
+training overrides. `resume_from` is controlled by the resume operation.
+Seeds, caption behavior, checkpoint cadence, and preview behavior come from
+the worker preset.
 
 ```json
 {
@@ -17,154 +28,118 @@ Krea2 identity request:
 }
 ```
 
-Krea2 presets are `krea2_defaults` (rank 32, 30 epochs) and
-`krea2_ultra_fast` (rank 8, adaptive LR, 20 epochs). The preset enables
-initial Qwen3-VL captioning for missing or empty `.txt` sidecars and repairs
-stuck images between epochs. These are execution details, not public switches.
+Submit a JSON file with:
 
-MiniMax H3 request:
-
-```json
-{
-  "family": "minimax_h3",
-  "dataset": "anna",
-  "output_name": "anna_h3_v1",
-  "preset": "h3_character_quality",
-  "trigger_word": "anna",
-  "epochs": 60
-}
+```bash
+python3 -m modal run fizgig-modal-app/control.py::submit_file \
+  --request-file fizgig-modal-app/request.example.json
 ```
 
-`family`, `dataset`, `output_name`, and `preset` are required. `trigger_word`
-and `epochs` are the only optional public training fields. Seeds, checkpoint
-cadence, caption behavior, and preview settings are resolved by the worker
-preset. `resume_from` is controlled by the resume endpoint and must not be
-submitted by clients.
+Krea2 presets are `krea2_defaults` (rank/alpha 32, 30 epochs, LR `1e-4`) and
+`krea2_ultra_fast` (rank/alpha 8, 20 epochs, adaptive LR `2e-4` to `4e-4`).
+H3 presets are `h3_character_fast` (rank 8, 40 epochs) and
+`h3_character_quality` (rank 16, 60 epochs).
 
-Route mapping:
+## Pinned upstream compatibility
 
-```text
-POST /training/jobs                  training-submit
-GET  /training/jobs/{id}             training-status
-POST /training/jobs/{id}/pause       training-pause
-POST /training/jobs/{id}/resume      training-resume
-POST /training/jobs/{id}/cancel      training-cancel
+The worker pins Fizgig `5d5ced3739f303065ca6d13b51eb95c5ec85c00d` (v6.8.3,
+master checked 2026-10-03). Krea2 uses `src/fizgig/families/cache.py` with
+`--family krea2 --stage latents|text --model ...`, then
+`src/fizgig/families/train.py --family krea2`. The original `krea2_cache_*`
+and `krea2_train.py` scripts no longer exist. The new driver uses automatic
+precision/block-swap planning; `--captioner` supplies the encoder needed by
+`--auto_recaption`.
+
+Krea2 caches are rebuilt with the `krea2drv` architecture suffix alongside old
+caches. Existing model weights remain usable. Upstream resumes old Krea2 state
+weights and epoch with a fresh optimizer/EMA, because parameter ordering changed;
+explain this when resuming a pre-upgrade run. MiniMax H3 keeps its existing
+headless entrypoints. The wrapper still exposes only Krea2 and H3 training;
+new upstream families and GUI tools are not automatically added to its API.
+
+## Lifecycle and compatibility
+
+`submit_training`, `get_training_job`, `pause_training_job`,
+`resume_training_job`, and `cancel_training_job` are also importable Python
+helpers in `control.py`. Submission calls the stable deployed `run_training`
+function with `.spawn(job_id, request)`, so it does not require `--detach`.
+Pause calls the small deployed `request_pause` function. Status and cancellation
+use the Modal Dict and FunctionCall SDK directly.
+
+Top-level states are `queued`, `running`, `succeeded`, `failed`, and `cancelled`.
+Worker details are in `progress.phase`. A completed pause is a successful
+function execution with `result.paused: true`; it is not completed training.
+Only a successfully paused job may resume, producing a new job ID.
+
+The existing `fizgig-modal-jobs` Dict holds worker records. Separate
+`submission:<job_id>` entries store the original request, call ID, and resume
+parent without racing worker progress updates. Status reconciles failures that
+occur before the worker starts and strips log tails unless `--logs` is passed.
+An expired FunctionCall output does not prove training failed.
+
+Older worker records remain readable. Paused records containing their resolved
+request can be resumed through the new client. Historical submissions without
+stored FunctionCall IDs cannot be cancelled or reconciled by the new client;
+use their original client if cancellation is needed. No REST deployment or
+historical job records are deleted or migrated. `scripts/fizgig_api.py` remains
+only for explicit legacy REST compatibility.
+
+## Setup and storage
+
+Deploy `fizgig-modal-app/app.py`, not `control.py`. An existing deployment with
+`health`, `fetch_models`, `run_training`, and `request_pause` already supports
+the direct client. The worker requires `huggingface-secret` with `HF_TOKEN`.
+
+```bash
+python3 -m modal run fizgig-modal-app/control.py::fetch_models --family krea2 --dry-run
+python3 -m modal run fizgig-modal-app/control.py::fetch_models --family krea2
 ```
 
-Top-level states are `queued`, `running`, `succeeded`, `failed`, and
-`cancelled`. Worker detail is carried in `progress.phase`.
-
-The first version requires images to exist in the shared Modal Volume:
+Model fetching uses the deployed CPU function and persistent `wangp-data` Volume.
+Use the requested family (`krea2` or `minimax_h3`); a dry run only prints the plan.
 
 ```text
+/data/fizgig/models/
 /data/fizgig/datasets/<dataset>/images
-```
-
-Runs and promoted LoRAs are stored at:
-
-```text
+/data/fizgig/datasets/<dataset>/cache
 /data/fizgig/runs/<output_name>
 /data/loras/<output_name>.safetensors
 ```
 
-There is no dataset upload, checkpoint-listing, preview-listing,
-comparison, evaluation, or per-epoch promotion endpoint yet.
+The worker generates a bucketed 512×512 dataset config with batch size 1 and
+one repeat. Krea2 captions missing sidecars, caches image latents and text,
+then trains with per-image loss/LR tracking and Qwen3-VL recaptioning. Existing
+non-empty captions are preserved. Checkpoints are saved each epoch and the
+last two state directories are retained. Only the unnumbered final LoRA is
+automatically copied to `/data/loras`; numbered checkpoints remain in the run.
 
-## Headless worker execution
+## Artifact operations
 
-The REST request contains training intent, not raw CLI arguments. The
-`fizgig-modal-app` worker validates that request, creates a 512x512 bucketed
-dataset config with batch size 1 and one repeat, and constructs the pinned
-Fizgig commands inside the GPU container.
-
-For `krea2_defaults`, the stages are:
-
-```text
-caption missing sidecars with Qwen3-VL
-krea2_cache_latents.py --skip_existing
-krea2_cache_text.py --skip_existing
-krea2_train.py
-```
-
-The training command resolves to rank/alpha 32, learning rate `1e-4`, 30 epochs,
-seed 42, one numbered checkpoint per epoch, resumable state, two retained state
-directories, `adamw8bit`, `compile_blocks=auto`, per-image loss logging and LR,
-and Qwen3-VL auto-recaptioning. No NF4, INT8, or block-swap flag is supplied, so
-Krea2 uses its validated dynamic-FP8 default with zero block swapping. A trigger
-word, when present, is passed both as the training trigger and metadata phrase.
-
-`krea2_ultra_fast` uses rank/alpha 8 and 20 epochs, and adds adaptive LR with a
-`2e-4` to `4e-4` range. The source of truth for command construction is
-`fizgig-modal-app/app.py`; do not reconstruct or execute these upstream commands
-outside the worker.
-
-After a completed run, Fizgig writes the unnumbered final LoRA in the run
-directory. The worker automatically copies only that file to:
-
-```text
-/data/loras/<output_name>.safetensors
-```
-
-For a full 30-epoch run, this unnumbered artifact corresponds to epoch 30.
-Numbered epoch checkpoints remain under the run directory until explicitly
-promoted.
-
-## Raw Modal CLI fallback
-
-Use the following commands only for direct development or operations not yet
-available through REST. Run them from the repository root. Load the existing
-local environment without printing credential values:
+For a requested dataset upload, use Modal Volume commands and verify layout:
 
 ```bash
-set -a
-source .env
-set +a
+python3 -m modal volume put wangp-data ./linda /fizgig/datasets/linda/images
+python3 -m modal volume ls wangp-data fizgig/datasets/linda/images --json
 ```
 
-### Direct development submission
-
-Edit `fizgig-modal-app/request.example.json`, keeping the same allowlisted REST
-shape, then detach the worker call:
-
-```bash
-python3 -m modal run --detach fizgig-modal-app/app.py \
-  --request-json fizgig-modal-app/request.example.json
-```
-
-This is the pre-REST/manual submission flow. It prints a job ID and Modal
-FunctionCall ID, but does not expose arbitrary Fizgig CLI arguments. Prefer
-`training-submit` for normal agent operation.
-
-### Diagnostic logs
-
-Read a bounded log tail rather than following indefinitely:
+For diagnostics, read a bounded log tail:
 
 ```bash
 python3 -m modal app logs fizgig-modal-app --tail 300 --timestamps
 ```
 
-Summarize stage, epoch/step progress, checkpoint saves, plateau or exclusion
-warnings, final artifact lines, and any fatal error. Do not claim terminal job
-success from logs alone.
+Summarize relevant phase, epochs, checkpoint saves, or errors. The job record
+is authoritative for terminal success, not the log tail.
 
-### Volume inspection
-
-List a run or the promoted LoRA directory as JSON:
+List runs and promoted LoRAs with Volume-relative paths (omit `/data`):
 
 ```bash
-python3 -m modal volume ls \
-  wangp-data fizgig/runs/<output_name> --json
-
+python3 -m modal volume ls wangp-data fizgig/runs/<output_name> --json
 python3 -m modal volume ls wangp-data loras --json
 ```
 
-The paths passed to `modal volume` are relative to the `/data` mount; omit the
-leading `/data`.
-
-### Manual epoch promotion
-
-First verify that the source exists and the destination does not. Then copy
-within the same Volume using a zero-padded epoch postfix:
+For an explicitly requested epoch promotion, first verify the source exists
+and the destination does not, then copy with an epoch postfix:
 
 ```bash
 python3 -m modal volume cp wangp-data \
@@ -172,58 +147,22 @@ python3 -m modal volume cp wangp-data \
   loras/<output_name>_epoch_003.safetensors
 ```
 
-Repeat only for epochs explicitly requested by the user. Preserve the source
-checkpoint and the unnumbered final LoRA. If a destination already exists,
-require confirmation before overwriting it. Deletion remains outside this
-fallback unless the user explicitly requests it and confirms the exact target.
+Preserve source checkpoints and the unnumbered final LoRA. Require confirmation
+before overwriting an existing destination or deleting artifacts.
 
 ## WanGP generation
 
-Submission shape:
+Generation uses `wangpt-modal-app/control.py`, independently of training.
+Read that app's README for current routing and model-specific behavior. Native
+params go in a JSON file passed with `--params-file`; `_api` is reserved.
+Absolute asset and LoRA paths stay under `/data`. `--kind image|video|audio`
+is optional and validated against the model catalog.
 
-```json
-{
-  "kind": "image",
-  "model": "krea2_turbo",
-  "params": {
-    "prompt": "A portrait in natural window light",
-    "resolution": "1024x1024",
-    "num_inference_steps": 8,
-    "seed": 42
-  }
-}
+```bash
+python3 -m modal run wangpt-modal-app/control.py::models
+python3 -m modal run wangpt-modal-app/control.py::defaults --model krea2_turbo
+python3 -m modal run wangpt-modal-app/control.py::schema --model krea2_turbo
+python3 -m modal run wangpt-modal-app/control.py::submit \
+  --model krea2_turbo --kind image --params-file request-params.json
+python3 -m modal run wangpt-modal-app/control.py::status --job-id JOB_ID
 ```
-
-`kind` is optional and accepts `image`, `video`, or `audio`. The server infers
-it from the selected model's `main_output` metadata when omitted. An explicit
-kind is validated against the model and a mismatch returns `400`. Video jobs
-run on the dedicated H100 worker; image and audio jobs use the standard L40S
-worker. Models that can switch between image and video are inferred from the
-effective native `image_mode` setting when `kind` is omitted.
-
-Route mapping:
-
-```text
-GET  /models                         models
-GET  /models/{model}/defaults        model-defaults
-GET  /models/{model}/schema          model-schema
-POST /jobs                           generation-submit
-GET  /jobs/{id}                      generation-status
-POST /jobs/{id}/cancel               generation-cancel
-GET  /outputs/{id}                   protected output download
-```
-
-Generation accepts native WanGP settings. `_api` is reserved, and
-absolute filesystem paths must remain under `/data`.
-
-## HTTP behavior
-
-- `400`: invalid field, value, or path.
-- `401` or `403`: invalid Modal proxy authentication.
-- `404`: unknown or expired resource.
-- `409`: invalid lifecycle transition.
-- `422`: malformed request shape.
-- `503`: Fizgig deployment or lifecycle operation unavailable.
-
-The client exits nonzero and writes a JSON error object to stderr for
-HTTP and transport failures.

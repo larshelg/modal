@@ -8,6 +8,7 @@ from app import (
     DATA_VOLUME_NAME,
     FIZGIG_COMMIT,
     FIZGIG_SCRIPTS,
+    FIZGIG_FAMILY_SCRIPTS,
     MODEL_PATHS,
     SUPPORTED_FAMILY,
     SUPPORTED_FAMILIES,
@@ -150,14 +151,22 @@ def test_krea2_pipeline_auto_captions_caches_and_trains_with_upstream_scripts():
         "caching_text",
         "training",
     ]
-    assert commands[1][1][1] == str(FIZGIG_SCRIPTS / "krea2_cache_latents.py")
-    assert commands[2][1][1] == str(FIZGIG_SCRIPTS / "krea2_cache_text.py")
+    assert commands[1][1][1] == str(FIZGIG_FAMILY_SCRIPTS / "cache.py")
+    assert commands[1][1][2:6] == ["--family", "krea2", "--stage", "latents"]
+    assert commands[1][1][commands[1][1].index("--model") + 1] == str(MODEL_PATHS["krea2"]["vae"])
+    assert commands[2][1][1] == str(FIZGIG_FAMILY_SCRIPTS / "cache.py")
+    assert commands[2][1][2:6] == ["--family", "krea2", "--stage", "text"]
+    assert commands[2][1][commands[2][1].index("--model") + 1] == str(MODEL_PATHS["krea2"]["text_encoder"])
     caption = commands[0][1]
     assert "--trigger-word" in caption
     assert str(MODEL_PATHS["krea2"]["text_encoder"]) in caption
 
     train = commands[3][1]
-    assert train[1] == str(FIZGIG_SCRIPTS / "krea2_train.py")
+    assert train[1] == str(FIZGIG_FAMILY_SCRIPTS / "train.py")
+    assert train[train.index("--family") + 1] == "krea2"
+    assert train[train.index("--precision") + 1] == "auto"
+    assert train[train.index("--blocks_to_swap") + 1] == "-1"
+    assert train[train.index("--captioner") + 1] == str(MODEL_PATHS["krea2"]["text_encoder"])
     assert str(MODEL_PATHS["krea2"]["dit"]) in train
     assert "--log_per_image_loss" in train
     assert "--per_image_lr" in train
