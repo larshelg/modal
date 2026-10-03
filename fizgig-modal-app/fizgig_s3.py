@@ -1,4 +1,4 @@
-"""Read-only S3 dataset imports using the same studio-s3 secret as WanGP."""
+"""S3 dataset imports and verified artifact uploads using WanGP's studio-s3 secret."""
 
 from __future__ import annotations
 
@@ -10,13 +10,15 @@ from pathlib import Path, PurePosixPath
 from tempfile import TemporaryDirectory
 from typing import Any, Callable
 
-from fizgig_common import normalize_dataset_s3, parse_dataset_s3, utc_now
+from fizgig_common import normalize_dataset_s3, parse_dataset_s3, utc_now, validate_component
 
 S3_SECRET_NAME = "studio-s3"
 S3_REQUIRED_KEYS = (
     "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY", "S3_ENDPOINT", "S3_BUCKET", "S3_REGION",
 )
 IMAGE_SUFFIXES = {".bmp", ".jpeg", ".jpg", ".png", ".webp"}
+# Keep in sync with the pinned fizgig.minimax.clip.VIDEO_EXTENSIONS.
+VIDEO_SUFFIXES = {".mp4"}
 
 
 @dataclass(frozen=True)
@@ -26,6 +28,8 @@ class DatasetLimits:
     max_image_bytes: int = 128 * 1024 * 1024
     max_caption_bytes: int = 1024 * 1024
     max_total_bytes: int = 10 * 1024 * 1024 * 1024
+    max_videos: int = 256
+    max_video_bytes: int = 512 * 1024 * 1024
 
 
 def create_s3_client():
@@ -45,10 +49,13 @@ def create_s3_client():
     ), os.environ["S3_BUCKET"]
 
 
-def plan_dataset(client, uri: str, bucket: str, limits: DatasetLimits = DatasetLimits()) -> dict[str, Any]:
-    """List the whole prefix with pagination, then pair images with adjacent captions."""
+def plan_dataset(client, uri: str, bucket: str, limits: DatasetLimits = DatasetLimits(),
+                 *, include_video: bool = False) -> dict[str, Any]:
+    """List a prefix and pair media with captions; video is opt-in for RefMods."""
     _, prefix = parse_dataset_s3(uri, bucket)
-    images, captions = {}, {}
+    media, captions = {}, {}
+    counts = {"image": 0, "video": 0}
+    suffixes = IMAGE_SUFFIXES | (VIDEO_SUFFIXES if include_video else set())
     scanned = 0
     for page in client.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix):
         for item in page.get("Contents", []):
@@ -62,51 +69,60 @@ def plan_dataset(client, uri: str, bucket: str, limits: DatasetLimits = DatasetL
             if not relative or relative.endswith("/"):
                 continue
             suffix = PurePosixPath(relative).suffix.lower()
-            if suffix not in IMAGE_SUFFIXES | {".txt"}:
+            if suffix not in suffixes | {".txt"}:
                 continue
             if ("\\" in relative or any(ord(char) < 32 for char in relative)
                     or any(part in {".", "..", ""} for part in relative.split("/"))):
                 raise ValueError("S3 dataset contains an unsafe object path")
-            # Files are flattened to hash names. The matching caption receives
-            # the image's hash stem, so subfolders and repeated basenames work.
-            kind = "image" if suffix in IMAGE_SUFFIXES else "caption"
+            # Media and its caption get the same hash stem, even across folders.
+            kind = "image" if suffix in IMAGE_SUFFIXES else "video" if suffix in VIDEO_SUFFIXES else "caption"
             size = int(item["Size"])
-            limit = limits.max_image_bytes if kind == "image" else limits.max_caption_bytes
-            if size < (1 if kind == "image" else 0) or size > limit:
+            limit = {"image": limits.max_image_bytes, "video": limits.max_video_bytes,
+                     "caption": limits.max_caption_bytes}[kind]
+            if size < (0 if kind == "caption" else 1) or size > limit:
                 raise ValueError(f"S3 {kind} is empty or exceeds its {limit}-byte limit: {key}")
             if not item.get("ETag"):
                 raise ValueError(f"S3 listing omitted the ETag needed to snapshot: {key}")
             entry = {"key": key, "size_bytes": size, "etag": item["ETag"], "kind": kind}
-            if kind == "image":
-                images[relative] = entry
-                if len(images) > limits.max_images:
-                    raise ValueError(f"S3 dataset exceeds the {limits.max_images}-image limit")
+            if kind != "caption":
+                if relative not in media:
+                    counts[kind] += 1
+                media[relative] = entry
+                count_limit = limits.max_images if kind == "image" else limits.max_videos
+                if counts[kind] > count_limit:
+                    raise ValueError(f"S3 dataset exceeds the {count_limit}-{kind} limit")
             else:
                 stem = str(PurePosixPath(relative).with_suffix(""))
                 if stem in captions:
-                    raise ValueError(f"ambiguous caption files for image stem: {stem}")
+                    raise ValueError(f"ambiguous caption files for media stem: {stem}")
                 captions[stem] = entry
-    if not images:
-        raise ValueError("S3 dataset contains no supported images")
+    if not media:
+        raise ValueError("S3 dataset contains no supported images" + (" or MP4 videos" if include_video else ""))
 
     files = []
-    caption_count = 0
-    for relative, entry in sorted(images.items()):
+    caption_counts = {"image": 0, "video": 0}
+    for relative, entry in sorted(media.items()):
         name = hashlib.sha256(relative.encode("utf-8")).hexdigest()
+        # Preserve upstream's explicit mute marker when flattening clip names.
+        if entry["kind"] == "video" and PurePosixPath(relative).stem.lower().endswith("_mute"):
+            name += "_mute"
         files.append({**entry, "name": name + PurePosixPath(relative).suffix.lower()})
         caption = captions.get(str(PurePosixPath(relative).with_suffix("")))
         if caption is not None:
             files.append({**caption, "name": name + ".txt"})
-            caption_count += 1
+            caption_counts[entry["kind"]] += 1
     total = sum(entry["size_bytes"] for entry in files)
     if total > limits.max_total_bytes:
         raise ValueError(f"S3 dataset exceeds the {limits.max_total_bytes}-byte total download limit")
     return {
-        "schema_version": 1,
+        "schema_version": 2 if include_video else 1,
         "source": normalize_dataset_s3(uri),
-        "image_count": len(images),
-        "caption_count": caption_count,
-        "images_without_caption": len(images) - caption_count,
+        "image_count": counts["image"],
+        "caption_count": sum(caption_counts.values()),
+        "images_without_caption": counts["image"] - caption_counts["image"],
+        **({"video_count": counts["video"], "media_count": len(media),
+            "videos_without_caption": counts["video"] - caption_counts["video"],
+            "media_without_caption": len(media) - sum(caption_counts.values())} if include_video else {}),
         "total_bytes": total,
         "files": files,
     }
@@ -114,8 +130,9 @@ def plan_dataset(client, uri: str, bucket: str, limits: DatasetLimits = DatasetL
 
 def dataset_summary(manifest: dict[str, Any]) -> dict[str, Any]:
     return {key: manifest[key] for key in (
-        "source", "image_count", "caption_count", "images_without_caption", "total_bytes",
-    )}
+        "source", "image_count", "video_count", "media_count", "caption_count",
+        "images_without_caption", "videos_without_caption", "media_without_caption", "total_bytes",
+    ) if key in manifest}
 
 
 def _download(client, bucket: str, entry: dict[str, Any], destination: Path) -> str:
@@ -154,12 +171,13 @@ def materialize_dataset(
     destination: Path,
     *,
     limits: DatasetLimits = DatasetLimits(),
+    include_video: bool = False,
     progress: Callable[[int, int, int, int], None] | None = None,
 ) -> dict[str, Any]:
     """Publish a complete local snapshot, leaving no partial dataset on failure."""
     if destination.exists():
         raise FileExistsError("S3 dataset destination already exists")
-    manifest = plan_dataset(client, uri, bucket, limits)
+    manifest = plan_dataset(client, uri, bucket, limits, include_video=include_video)
     destination.parent.mkdir(parents=True, exist_ok=True)
     # The temporary directory shares the destination filesystem so rename is
     # atomic. Never overwrite an existing run's snapshot or captions.
@@ -179,35 +197,85 @@ def materialize_dataset(
     return manifest
 
 
-def load_dataset_snapshot(destination: Path, uri: str) -> dict[str, Any]:
+def load_dataset_snapshot(destination: Path, uri: str, *, include_video: bool = False) -> dict[str, Any]:
     """Resume from persisted inputs and captions without consulting mutable S3."""
     try:
         manifest = json.loads((destination / "manifest.json").read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise ValueError("S3 dataset snapshot is missing or invalid; cannot resume safely") from exc
-    if manifest.get("schema_version") != 1 or manifest.get("source") != normalize_dataset_s3(uri):
+    schemas = {1, 2} if include_video else {1}
+    if manifest.get("schema_version") not in schemas or manifest.get("source") != normalize_dataset_s3(uri):
         raise ValueError("S3 dataset snapshot does not match the requested source")
-    image_names = set()
+    media_names = set()
+    suffixes = IMAGE_SUFFIXES | (VIDEO_SUFFIXES if include_video else set())
     for entry in manifest["files"]:
         # Captions are intentionally mutable: captioning/recaptioning writes
         # improved sidecars during training. Preserve those on resume.
-        if entry["kind"] != "image":
+        if entry["kind"] == "caption":
             continue
+        if entry["kind"] not in ({"image", "video"} if include_video else {"image"}):
+            raise ValueError("unsupported media in S3 dataset snapshot")
         name = entry["name"]
-        if Path(name).name != name or Path(name).suffix.lower() not in IMAGE_SUFFIXES:
-            raise ValueError("invalid image path in S3 dataset snapshot")
+        if Path(name).name != name or Path(name).suffix.lower() not in suffixes:
+            raise ValueError("invalid media path in S3 dataset snapshot")
         path = destination / "images" / name
         if path.is_symlink() or not path.is_file() or path.stat().st_size != entry["size_bytes"]:
-            raise ValueError("S3 dataset snapshot image is missing or changed")
+            raise ValueError("S3 dataset snapshot media is missing or changed")
         digest = hashlib.sha256()
         with path.open("rb") as stream:
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                 digest.update(chunk)
         if digest.hexdigest() != entry["sha256"]:
-            raise ValueError("S3 dataset snapshot image failed SHA-256 verification")
-        image_names.add(name)
+            raise ValueError("S3 dataset snapshot media failed SHA-256 verification")
+        media_names.add(name)
     actual = {path.name for path in (destination / "images").iterdir()
-              if path.suffix.lower() in IMAGE_SUFFIXES}
-    if not image_names or image_names != actual:
-        raise ValueError("S3 dataset snapshot image set changed")
+              if path.suffix.lower() in suffixes}
+    if not media_names or media_names != actual:
+        raise ValueError("S3 dataset snapshot media set changed")
     return manifest
+
+
+S3_OUTPUT_PREFIX = "runninghub/fizgig"
+
+
+def upload_artifact(client, bucket: str, job_id: str, path: Path, artifact_type: str) -> dict[str, Any]:
+    """Publish one final artifact using WanGP's URI/size/SHA-256 output contract."""
+    job_id = validate_component(job_id, "job_id")
+    validate_component(path.stem, "artifact output_name")
+    if artifact_type not in {"lora", "refmod"} or path.suffix != ".safetensors":
+        raise ValueError("expected a final LoRA or RefMod safetensors artifact")
+    digest, size = hashlib.sha256(), 0
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+            size += len(chunk)
+    if not size:
+        raise ValueError("cannot publish an empty artifact")
+    sha256 = digest.hexdigest()
+    key = f"{S3_OUTPUT_PREFIX}/{job_id}/000-{path.name}"
+
+    def matches(head):
+        return (int(head.get("ContentLength", -1)) == size
+                and head.get("Metadata", {}).get("sha256") == sha256)
+
+    # Idempotent retry, but never silently replace a different object at this key.
+    try:
+        existing = client.head_object(Bucket=bucket, Key=key)
+    except Exception as exc:
+        code = getattr(exc, "response", {}).get("Error", {}).get("Code")
+        if code not in {"404", "NoSuchKey", "NotFound"}:
+            raise
+        existing = None
+    if existing is not None:
+        if not matches(existing):
+            raise FileExistsError(f"a different artifact already exists at s3://{bucket}/{key}")
+    else:
+        client.upload_file(str(path), bucket, key, ExtraArgs={
+            "ContentType": "application/octet-stream", "Metadata": {"sha256": sha256},
+        })
+        if not matches(client.head_object(Bucket=bucket, Key=key)):
+            raise RuntimeError(f"uploaded artifact verification failed for {key}")
+    return {"storage": "s3", "bucket": bucket, "key": key,
+            "uri": f"s3://{bucket}/{key}", "filename": path.name, "size_bytes": size,
+            "media_type": "application/octet-stream", "sha256": sha256,
+            "artifact_type": artifact_type}

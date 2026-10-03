@@ -13,6 +13,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from fizgig_common import is_refmod
+
 from app import (
     CAPTION_SCRIPT,
     FIZGIG_COMMIT,
@@ -86,6 +88,10 @@ def test_every_preset_command_is_accepted_by_pinned_upstream(upstream, preset):
         "trigger_word": "contractsubject",
         "epochs": 2,
     }
+    if is_refmod(intent):
+        intent.pop("epochs")
+        intent.pop("trigger_word")
+        intent["description"] = "--a hint with spaces"
     normalized = validate_training_request(intent)
     for phase, command in build_pipeline_commands(normalized, paths_for_request(normalized)):
         if command[1] == str(CAPTION_SCRIPT):
@@ -95,6 +101,21 @@ def test_every_preset_command_is_accepted_by_pinned_upstream(upstream, preset):
         parser = _parser(upstream, script)
         parsed = parser.parse_args(command[2:])
         assert parsed.dataset_config.endswith("dataset.toml")
+        if phase == "making_refmod":
+            assert parsed.steps == normalized["steps"]
+            assert parsed.max_refs == normalized["max_refs"]
+            assert parsed.base_model == "ref2va"
+            assert parsed.description == intent["description"]
+            assert parsed.audio == "off"
+            assert not parsed.sample_prompts
+            assert parsed.ref_cache_dir == ([str(paths_for_request(normalized)["cache_dir"]) + "-refs"]
+                                            if normalized["steps"] else None)
+        if phase == "caching_references":
+            assert parsed.cache_suffix == "-refs"
+            assert parsed.megapixels == normalized["target_mp"]
+        if phase == "caching_latents" and is_refmod(intent):
+            assert parsed.captions_optional == (normalized["steps"] == 0)
+            assert parsed.megapixels == (0.25 if normalized["steps"] else normalized["target_mp"])
         if phase == "training":
             resumed = parser.parse_args([*command[2:], "--resume", "/data/fizgig/runs/contract-run/contract-run-000001-state"])
             assert resumed.resume.endswith("-state")
@@ -124,3 +145,21 @@ def test_driver_cache_has_a_distinct_architecture(upstream):
                        and any(isinstance(t, ast.Name) and t.id == "KREA2" for t in n.targets))
     arch_id = next(ast.literal_eval(k.value) for k in description.keywords if k.arg == "arch_id")
     assert arch_id == "krea2drv", "cache layout changed; review reuse of existing dataset caches"
+
+
+@pytest.mark.parametrize("clips", ["still", "motion"])
+@pytest.mark.parametrize("steps", [0, 200])
+def test_video_refmod_commands_match_pinned_upstream(upstream, clips, steps):
+    from fizgig_s3 import VIDEO_SUFFIXES
+    assert VIDEO_SUFFIXES == set(_constant(upstream, "src/fizgig/minimax/clip.py", "VIDEO_EXTENSIONS"))
+    request = validate_training_request({"family": "minimax_h3", "dataset": "clips",
+        "output_name": "video-refmod", "preset": "h3_refmod_lite", "steps": steps,
+        "clips": clips, "token_cap": 5120})
+    for phase, command in build_pipeline_commands(request, paths_for_request(request)):
+        script = upstream / Path(command[1]).relative_to(FIZGIG_ROOT)
+        parsed = _parser(upstream, script).parse_args(command[2:])
+        if phase in {"caching_latents", "caching_references"}:
+            assert parsed.clip_still is True
+        if phase == "making_refmod":
+            assert parsed.clips == clips and parsed.token_cap == 5120
+            assert parsed.audio == "off"

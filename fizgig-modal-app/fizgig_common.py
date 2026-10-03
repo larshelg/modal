@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import math
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import quote, unquote, urlsplit
@@ -61,6 +62,53 @@ SUPPORTED_PRESETS: dict[str, dict[str, Any]] = {
     },
 }
 
+# RefMods use the H3 family but produce reference latents, not LoRA weights.
+REFMOD_PRESETS = {
+    "h3_refmod_community": {"steps": 0, "max_refs": 8, "target_mp": 1.0},
+    "h3_refmod_lite": {"steps": 200, "max_refs": 16, "target_mp": 0.5},
+    "h3_refmod_quality": {"steps": 200, "max_refs": 16, "target_mp": 1.0},
+}
+for _name, _settings in REFMOD_PRESETS.items():
+    SUPPORTED_PRESETS[_name] = {
+        "family": "minimax_h3", "artifact_type": "refmod", "grid": "full",
+        "base_model": "ref2va", "concept_type": "identity", "description": "",
+        "clips": "still", "token_cap": 0,
+        **_settings,
+    }
+
+REFMOD_REQUEST_KEYS = {"steps", "max_refs", "target_mp", "grid", "base_model", "concept_type", "description", "clips", "token_cap"}
+
+
+def is_refmod(request: dict[str, Any]) -> bool:
+    return request.get("preset") in REFMOD_PRESETS
+
+
+def _refmod_settings(request: dict[str, Any], preset: dict[str, Any]) -> dict[str, Any]:
+    for key in ("epochs", "trigger_word", "resume_from"):
+        if key in request:
+            raise ValueError(f"{key} is not supported for RefMod jobs")
+    settings = {**preset, **{key: request[key] for key in REFMOD_REQUEST_KEYS if key in request}}
+    settings["steps"] = _bounded_int(settings["steps"], "steps", 0, 2000)
+    settings["max_refs"] = _bounded_int(settings["max_refs"], "max_refs", 1, 64)
+    settings["token_cap"] = _bounded_int(settings["token_cap"], "token_cap", 0, 65536)
+    for key, choices in (
+        ("clips", ("still", "motion")),
+        ("grid", ("full", "8", "16", "32")),
+        ("base_model", ("ref2va", "fl2va")),
+        ("concept_type", ("identity", "style", "pose_motion", "clothing", "background", "generic")),
+    ):
+        if not isinstance(settings[key], str) or settings[key] not in choices:
+            raise ValueError(f"{key} must be one of: {', '.join(choices)}")
+    mp = settings["target_mp"]
+    if isinstance(mp, bool) or not isinstance(mp, (int, float)) or not math.isfinite(mp) or not 0.25 <= mp <= 1.0:
+        raise ValueError("target_mp must be a finite number between 0.25 and 1.0")
+    description = settings["description"]
+    if not isinstance(description, str) or len(description) > 1000 or any(ord(c) < 32 for c in description):
+        raise ValueError("description must be a single-line string of at most 1000 characters")
+    settings["description"] = description.strip()
+    return settings
+
+
 _SAFE_COMPONENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _ALLOWED_REQUEST_KEYS = {
     "family",
@@ -71,7 +119,7 @@ _ALLOWED_REQUEST_KEYS = {
     "trigger_word",
     "epochs",
     "resume_from",
-}
+} | REFMOD_REQUEST_KEYS
 
 
 def utc_now() -> str:
@@ -134,6 +182,14 @@ def validate_training_request(request: dict[str, Any]) -> dict[str, Any]:
     preset = dict(SUPPORTED_PRESETS[preset_name])
     if preset["family"] != family:
         raise ValueError(f"preset {preset_name!r} does not support family {family!r}")
+    if is_refmod(request):
+        return {
+            **_refmod_settings(request, preset), "family": family, "dataset": dataset,
+            "dataset_s3": dataset_s3, "output_name": output_name, "preset": preset_name,
+            "seed": 42, "resume_from": None,
+        }
+    if REFMOD_REQUEST_KEYS & request.keys():
+        raise ValueError("RefMod settings require an h3_refmod preset")
     epochs = _bounded_int(request.get("epochs", preset["epochs"]), "epochs", 1, 500)
 
     trigger_word = request.get("trigger_word")

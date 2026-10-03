@@ -1,0 +1,8 @@
+{
+  "family": "minimax_h3",
+  "dataset": "linda",
+  "output_name": "linda_refmod_lite_v1",
+  "preset": "h3_refmod_lite",
+  "base_model": "ref2va",
+  "description": "A woman with blonde hair"
+}

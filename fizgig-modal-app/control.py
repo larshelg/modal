@@ -15,6 +15,7 @@ from fizgig_common import (
     SUPPORTED_FAMILIES,
     TERMINAL_STATUSES,
     training_intent,
+    is_refmod,
     normalize_dataset_s3,
     utc_now,
     validate_component,
@@ -119,6 +120,8 @@ def get_training_job(job_id: str, *, logs: bool = False) -> dict[str, Any]:
 
 def pause_training_job(job_id: str) -> dict[str, Any]:
     record = get_training_job(job_id)
+    if is_refmod(record.get("request", {})):
+        raise ValueError("RefMod jobs do not support pause/resume; use cancel to stop the job")
     if record["status"] != "running":
         raise ValueError("only a running training job can be paused")
     pause_function = modal.Function.from_name(APP_NAME, "request_pause")
@@ -127,6 +130,8 @@ def pause_training_job(job_id: str) -> dict[str, Any]:
 
 def resume_training_job(job_id: str) -> dict[str, Any]:
     record = get_training_job(job_id)
+    if is_refmod(record.get("request", {})):
+        raise ValueError("RefMod jobs do not support pause/resume")
     result = record.get("result") or {}
     if record["status"] != "succeeded" or not result.get("paused"):
         raise ValueError("only a successfully paused training job can be resumed")
@@ -201,6 +206,41 @@ def submit(
 
 
 @app.local_entrypoint()
+def refmod(
+    output_name: str,
+    preset: str = "h3_refmod_community",
+    dataset: str = "",
+    dataset_s3: str = "",
+    steps: int = -1,
+    base_model: str = "ref2va",
+    max_refs: int = 0,
+    target_mp: float = 0.0,
+    grid: str = "full",
+    description: str = "",
+    concept_type: str = "identity",
+    clips: str = "still",
+    token_cap: int = 0,
+) -> None:
+    """Create an H3 image/video RefMod. -1 steps uses the preset; 0 means plain encode."""
+    request = {"family": "minimax_h3", "output_name": output_name, "preset": preset,
+               "base_model": base_model, "grid": grid, "description": description,
+               "concept_type": concept_type, "clips": clips, "token_cap": token_cap}
+    if not is_refmod(request):
+        raise ValueError("refmod requires an h3_refmod preset")
+    if dataset:
+        request["dataset"] = dataset
+    if dataset_s3:
+        request["dataset_s3"] = dataset_s3
+    if steps != -1:
+        request["steps"] = steps
+    if max_refs != 0:
+        request["max_refs"] = max_refs
+    if target_mp != 0:
+        request["target_mp"] = target_mp
+    print_json(submit_training(request))
+
+
+@app.local_entrypoint()
 def submit_file(request_file: str) -> None:
     """Submit the same allowlisted request from a JSON file."""
     print_json(submit_training(json.loads(Path(request_file).expanduser().read_text())))
@@ -209,6 +249,14 @@ def submit_file(request_file: str) -> None:
 @app.local_entrypoint()
 def status(job_id: str, logs: bool = False) -> None:
     print_json(get_training_job(job_id, logs=logs))
+
+
+@app.local_entrypoint()
+def publish(job_id: str) -> None:
+    """Upload a completed artifact or retry a failed S3 upload on CPU."""
+    job_id = validate_component(job_id, "job_id")
+    function = modal.Function.from_name(APP_NAME, "publish_artifact")
+    print_json(function.remote(job_id))
 
 
 @app.local_entrypoint()
@@ -227,17 +275,24 @@ def cancel(job_id: str) -> None:
 
 
 @app.local_entrypoint()
-def fetch_models(family: str, dry_run: bool = False) -> None:
+def fetch_models(family: str, dry_run: bool = False, include_optional: bool = False) -> None:
     """Download model weights through the deployed CPU function."""
     if family not in SUPPORTED_FAMILIES:
         raise ValueError(f"family must be one of: {', '.join(SUPPORTED_FAMILIES)}")
     function = modal.Function.from_name(APP_NAME, "fetch_models")
-    print_json(function.remote(family, False, dry_run))
+    # Preserve compatibility with older deployments for the existing command.
+    if include_optional:
+        print_json(function.remote(family, False, dry_run, include_optional=True))
+    else:
+        print_json(function.remote(family, False, dry_run))
 
 
 @app.local_entrypoint()
-def dataset_info(dataset_s3: str, verify_download: bool = False) -> None:
+def dataset_info(dataset_s3: str, verify_download: bool = False, include_video: bool = False) -> None:
     """Inspect an S3 dataset on CPU, optionally verifying downloads in temporary storage."""
     uri = normalize_dataset_s3(dataset_s3)
     function = modal.Function.from_name(APP_NAME, "inspect_dataset")
-    print_json(function.remote(uri, verify_download))
+    if include_video:
+        print_json(function.remote(uri, verify_download, include_video=True))
+    else:
+        print_json(function.remote(uri, verify_download))

@@ -49,6 +49,19 @@ class FakeS3:
             "Metadata": {"sha256": sha256(value).hexdigest()},
         })
 
+    def upload_file(self, path, bucket, key, ExtraArgs):
+        if not hasattr(self, "artifacts"):
+            self.artifacts = {}
+        self.artifacts[(bucket, key)] = {"body": Path(path).read_bytes(), "metadata": ExtraArgs["Metadata"]}
+
+    def head_object(self, Bucket, Key):
+        value = getattr(self, "artifacts", {}).get((Bucket, Key))
+        if value is None:
+            error = RuntimeError("not found")
+            error.response = {"Error": {"Code": "404"}}
+            raise error
+        return {"ContentLength": len(value["body"]), "Metadata": value["metadata"]}
+
     def close(self):
         pass
 

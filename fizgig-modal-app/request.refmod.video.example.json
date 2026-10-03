@@ -1,0 +1,9 @@
+{
+  "family": "minimax_h3",
+  "dataset": "linda-clips",
+  "output_name": "linda_motion_v1",
+  "preset": "h3_refmod_community",
+  "clips": "motion",
+  "token_cap": 5120,
+  "description": "A woman walking and turning toward the camera"
+}

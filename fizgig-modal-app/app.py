@@ -30,11 +30,12 @@ from fizgig_common import (
     utc_now,
     validate_component,
     validate_training_request,
+    is_refmod,
 )
 
 from fizgig_s3 import (
-    S3_SECRET_NAME, S3_REQUIRED_KEYS, create_s3_client, dataset_summary,
-    plan_dataset, materialize_dataset, load_dataset_snapshot,
+    S3_SECRET_NAME, S3_REQUIRED_KEYS, VIDEO_SUFFIXES, create_s3_client, dataset_summary,
+    plan_dataset, materialize_dataset, load_dataset_snapshot, upload_artifact, S3_OUTPUT_PREFIX,
 )
 
 
@@ -50,6 +51,8 @@ FIZGIG_DATA_ROOT = DATA_ROOT / "fizgig"
 MODEL_ROOT = FIZGIG_DATA_ROOT / "models"
 DATASET_ROOT = FIZGIG_DATA_ROOT / "datasets"
 RUN_ROOT = FIZGIG_DATA_ROOT / "runs"
+REFMOD_ROOT = DATA_ROOT / "refmods"
+REFMOD_REF_DIT = MODEL_ROOT / "minimax_h3_ref2va_pruned_int8_convrot.safetensors"
 LORA_ROOT = DATA_ROOT / "loras"
 
 GPU_TYPE = os.environ.get("FIZGIG_GPU", "L40S")
@@ -123,6 +126,7 @@ fizgig_image = (
         f"python {FIZGIG_SCRIPTS}/minimax_cache_latents.py --help > /dev/null",
         f"python {FIZGIG_SCRIPTS}/minimax_cache_text.py --help > /dev/null",
         f"python {FIZGIG_SCRIPTS}/minimax_train.py --help > /dev/null",
+        f"python {FIZGIG_SCRIPTS}/minimax_refmod.py --help > /dev/null",
     )
     .pip_install("boto3>=1.40,<2")
     # Copy local code before declaring cache paths under the future Volume
@@ -175,24 +179,27 @@ def paths_for_request(request: dict[str, Any]) -> dict[str, Path]:
         run_dir / "dataset" if request.get("dataset_s3") else
         require_data_path(DATASET_ROOT / request["dataset"], root=FIZGIG_DATA_ROOT)
     )
+    # RefMod resolutions must not reuse a Volume dataset's LoRA caches.
+    work_dir = run_dir if is_refmod(request) else dataset_dir
     return {
         "dataset_dir": dataset_dir,
         "image_dir": dataset_dir / "images",
-        "cache_dir": dataset_dir / "cache",
-        "config_path": dataset_dir / "dataset.toml",
+        "cache_dir": work_dir / "cache",
+        "config_path": work_dir / "dataset.toml",
+        "promoted_refmod": require_data_path(REFMOD_ROOT / f"{request['output_name']}.safetensors"),
         "run_dir": run_dir,
         "pause_path": run_dir / ".pause_requested",
         "promoted_lora": require_data_path(LORA_ROOT / f"{request['output_name']}.safetensors"),
     }
 
 
-def dataset_config_text(image_dir: Path, cache_dir: Path) -> str:
+def dataset_config_text(image_dir: Path, cache_dir: Path, *, resolution: int = 512) -> str:
     image_dir = require_data_path(image_dir, root=FIZGIG_DATA_ROOT)
     cache_dir = require_data_path(cache_dir, root=FIZGIG_DATA_ROOT)
     return "\n".join(
         [
             "[general]",
-            "resolution = [512, 512]",
+            f"resolution = [{resolution}, {resolution}]",
             'caption_extension = ".txt"',
             "batch_size = 1",
             "num_repeats = 1",
@@ -229,9 +236,39 @@ def resolve_resume_path(request: dict[str, Any], run_dir: Path) -> Path | None:
 def build_pipeline_commands(
     request: dict[str, Any], paths: dict[str, Path]
 ) -> list[tuple[str, list[str]]]:
+    if is_refmod(request):
+        return _refmod_pipeline_commands(request, paths)
     if request["family"] == "krea2":
         return _krea2_pipeline_commands(request, paths)
     return _h3_pipeline_commands(request, paths)
+
+
+def _refmod_pipeline_commands(request: dict[str, Any], paths: dict[str, Path]) -> list[tuple[str, list[str]]]:
+    models = MODEL_PATHS["minimax_h3"]
+    config = str(paths["config_path"])
+    optimized = request["steps"] > 0
+    latent = ["python", str(FIZGIG_SCRIPTS / "minimax_cache_latents.py"),
+              "--dataset_config", config, "--vae", str(models["vae"]), "--skip_existing", "--clip_still"]
+    commands = [("caching_latents", [*latent, "--megapixels", str(0.25 if optimized else request["target_mp"]),
+                                    *([] if optimized else ["--captions_optional"])])]
+    if optimized:
+        commands.append(("caching_text", ["python", str(FIZGIG_SCRIPTS / "minimax_cache_text.py"),
+                         "--dataset_config", config, "--text_encoder", str(models["text_encoder"]), "--skip_existing"]))
+        commands.append(("caching_references", [*latent, "--megapixels", str(request["target_mp"]),
+                                                "--cache_suffix=-refs", "--captions_optional"]))
+    dit = REFMOD_REF_DIT if request["base_model"] == "ref2va" else models["dit"]
+    command = ["python", str(FIZGIG_SCRIPTS / "minimax_refmod.py"),
+               "--dit", str(dit), "--dataset_config", config,
+               "--output_dir", str(paths["run_dir"]), "--output_name", request["output_name"],
+               "--steps", str(request["steps"]), "--max_refs", str(request["max_refs"]),
+               "--clips", request["clips"], "--token_cap", str(request["token_cap"]),
+               "--grid", request["grid"], "--base_model", request["base_model"],
+               "--concept_type", request["concept_type"], "--description=" + request["description"],
+               "--seed", str(request["seed"]), "--base_quant", "nf4", "--blocks_to_swap", "auto"]
+    if optimized:
+        command.extend(["--ref_cache_dir", str(paths["cache_dir"]) + "-refs"])
+    commands.append(("making_refmod", command))
+    return commands
 
 
 def _h3_pipeline_commands(
@@ -453,6 +490,7 @@ def _ensure_layout() -> None:
         DATASET_ROOT,
         RUN_ROOT,
         LORA_ROOT,
+        REFMOD_ROOT,
         DATA_ROOT / "huggingface/hub",
         DATA_ROOT / "huggingface/transformers",
         DATA_ROOT / "triton",
@@ -475,6 +513,11 @@ def _parse_epoch(line: str) -> tuple[int, int] | None:
         if match:
             return int(match.group(1)), int(match.group(2))
     return None
+
+
+def _parse_refmod_step(line: str) -> tuple[int, int] | None:
+    match = re.search(r"\[refmod\]\s+step\s+(\d+)\s*/\s*(\d+)", line)
+    return (int(match[1]), int(match[2])) if match else None
 
 
 def _run_stage(job_id: str, phase: str, command: list[str], pause_path: Path) -> None:
@@ -502,6 +545,7 @@ def _run_stage(job_id: str, phase: str, command: list[str], pause_path: Path) ->
     monitor.start()
     last_update = 0.0
     epoch: tuple[int, int] | None = None
+    steps: tuple[int, int] | None = None
     try:
         assert process.stdout is not None
         for raw_line in process.stdout:
@@ -510,11 +554,14 @@ def _run_stage(job_id: str, phase: str, command: list[str], pause_path: Path) ->
                 print(line, flush=True)
                 tail.append(line)
                 epoch = _parse_epoch(line) or epoch
+                steps = _parse_refmod_step(line) or steps
             now = time.monotonic()
             if now - last_update >= 5:
                 progress: dict[str, Any] = {"phase": phase, "log_tail": list(tail)}
                 if epoch:
                     progress.update(epoch=epoch[0], epochs_total=epoch[1])
+                if steps:
+                    progress.update(step=steps[0], steps_total=steps[1])
                 _put_job(job_id, progress=progress)
                 last_update = now
         return_code = process.wait()
@@ -538,6 +585,8 @@ def _prepare_run(request: dict[str, Any], paths: dict[str, Path], *, progress=No
             f"run directory already contains data: {paths['run_dir']}; "
             "choose a new output_name or resume"
         )
+    if is_refmod(request) and paths["promoted_refmod"].exists():
+        raise FileExistsError("RefMod output already exists; choose a new output_name")
     dataset = None
     if request.get("dataset_s3"):
         if request["resume_from"]:
@@ -547,44 +596,78 @@ def _prepare_run(request: dict[str, Any], paths: dict[str, Path], *, progress=No
             try:
                 manifest = materialize_dataset(
                     client, request["dataset_s3"], bucket, paths["dataset_dir"], progress=progress,
+                    include_video=is_refmod(request),
                 )
             finally:
                 client.close()
         dataset = {**dataset_summary(manifest), "snapshot_path": str(paths["dataset_dir"])}
     if not paths["image_dir"].is_dir():
         raise ValueError(f"dataset images directory does not exist: {paths['image_dir']}")
-    images = [
+    suffixes = _IMAGE_SUFFIXES | (VIDEO_SUFFIXES if is_refmod(request) else set())
+    media = [
         path for path in paths["image_dir"].iterdir()
-        if path.is_file() and path.suffix.lower() in _IMAGE_SUFFIXES
+        if path.is_file() and path.suffix.lower() in suffixes
     ]
-    if not images:
-        raise ValueError(f"dataset images directory contains no supported images: {paths['image_dir']}")
-    if request.get("dataset_s3") and request["family"] == "minimax_h3":
-        missing = [path for path in images if not path.with_suffix(".txt").is_file()
+    if not media:
+        supported = "images or MP4 videos" if is_refmod(request) else "images"
+        raise ValueError(f"dataset directory contains no supported {supported}: {paths['image_dir']}")
+    if request["family"] == "minimax_h3" and (not is_refmod(request) or request["steps"] > 0):
+        missing = [path for path in media if not path.with_suffix(".txt").is_file()
                    or not path.with_suffix(".txt").read_text(encoding="utf-8").strip()]
         if missing:
-            raise ValueError(f"MiniMax H3 requires non-empty .txt captions; {len(missing)} images are missing captions")
+            raise ValueError(f"MiniMax H3 requires non-empty .txt captions; {len(missing)} media files are missing captions")
     paths["cache_dir"].mkdir(parents=True, exist_ok=True)
     paths["run_dir"].mkdir(parents=True, exist_ok=True)
+    config_options = {}
+    if is_refmod(request):
+        # Match upstream --megapixels exactly; bucket planning during optimization
+        # must see the same dimensions that produced the latent caches.
+        mp = 0.25 if request["steps"] else request["target_mp"]
+        config_options["resolution"] = int((mp * 1_000_000) ** 0.5) // 16 * 16
     paths["config_path"].write_text(
-        dataset_config_text(paths["image_dir"], paths["cache_dir"]), encoding="utf-8",
+        dataset_config_text(paths["image_dir"], paths["cache_dir"], **config_options), encoding="utf-8",
     )
     paths["pause_path"].unlink(missing_ok=True)
     return dataset
 
 
 def _verify_models(request: dict[str, Any]) -> None:
-    models = MODEL_PATHS[request["family"]]
+    models = dict(MODEL_PATHS[request["family"]])
+    if is_refmod(request):
+        if request["steps"] == 0:
+            models = {"vae": models["vae"]}
+        elif request["base_model"] == "ref2va":
+            models["dit"] = REFMOD_REF_DIT
     missing = [str(path) for path in models.values() if not path.is_file()]
     if missing:
         raise FileNotFoundError(
-            f"required {request['family']} models are missing; run fetch_models first: "
-            + ", ".join(missing)
+            f"required {request['family']} models are missing; run fetch_models first"
+            + (" with --include-optional for ref2va" if is_refmod(request) and request["base_model"] == "ref2va" and request["steps"] else "")
+            + ": " + ", ".join(missing)
         )
 
 
 def _finalize_run(request: dict[str, Any], paths: dict[str, Path]) -> dict[str, Any]:
     output = paths["run_dir"] / f"{request['output_name']}.safetensors"
+    if is_refmod(request):
+        if not output.is_file() or not output.stat().st_size:
+            raise FileNotFoundError(f"Fizgig completed without producing a RefMod: {output}")
+        destination = paths["promoted_refmod"]
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        # Volume v1 has no hard links. Exclusive creation preserves an existing
+        # artifact; clean up this job's partial copy if the transfer fails.
+        with output.open("rb") as source:
+            target = destination.open("xb")
+            try:
+                with target:
+                    shutil.copyfileobj(source, target)
+            except BaseException:
+                destination.unlink(missing_ok=True)
+                raise
+        return {"paused": False, "artifact_type": "refmod", "artifact_path": str(destination),
+                "run_path": str(paths["run_dir"]), "size_bytes": destination.stat().st_size,
+                "steps": request["steps"], "clips": request["clips"], "token_cap": request["token_cap"],
+                "base_model": request["base_model"] if request["steps"] else None}
     if not output.is_file():
         latest_state = _latest_state_dir(paths["run_dir"], request["output_name"])
         if latest_state is not None:
@@ -599,10 +682,52 @@ def _finalize_run(request: dict[str, Any], paths: dict[str, Path]) -> dict[str, 
     shutil.copy2(output, paths["promoted_lora"])
     return {
         "paused": False,
+        "artifact_type": "lora",
         "artifact_path": str(paths["promoted_lora"]),
         "run_path": str(paths["run_dir"]),
         "size_bytes": paths["promoted_lora"].stat().st_size,
     }
+
+
+def _publish_result(job_id: str, request: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    if result.get("paused"):
+        return result
+    output_name = validate_component(request["output_name"], "output_name")
+    paths = paths_for_request(request)
+    kind = "refmod" if is_refmod(request) else "lora"
+    expected = paths["promoted_refmod"] if kind == "refmod" else paths["promoted_lora"]
+    if result.get("artifact_path") != str(expected):
+        raise ValueError("job artifact path does not match its training request")
+    # Read the run's final artifact, rather than a shared promoted filename that
+    # might have been replaced by a later run. Checkpoints and state stay local.
+    path = paths["run_dir"] / f"{output_name}.safetensors"
+    client, bucket = create_s3_client()
+    try:
+        output = upload_artifact(client, bucket, job_id, path, kind)
+    finally:
+        client.close()
+    return {**result, "artifact_type": kind, "artifact_uri": output["uri"], "outputs": [output]}
+
+
+@app.function(
+    image=control_image, timeout=1800, volumes={str(DATA_ROOT): data_volume},
+    secrets=[modal.Secret.from_name(S3_SECRET_NAME, required_keys=list(S3_REQUIRED_KEYS))],
+)
+def publish_artifact(job_id: str) -> dict[str, Any]:
+    """Publish an older completed run, or retry an upload, without starting a GPU."""
+    job_id = validate_component(job_id, "job_id")
+    record = job_store.get(job_id)
+    if record is None:
+        raise ValueError("job not found")
+    result = record.get("result") or {}
+    retryable = record.get("status") == "failed" and record.get("progress", {}).get("phase") == "uploading_artifact"
+    if (record.get("status") != "succeeded" and not retryable) or result.get("paused") or not result.get("artifact_path"):
+        raise ValueError("only completed artifacts or failed artifact uploads can be published")
+    data_volume.reload()
+    published = _publish_result(job_id, record["request"], result)
+    return _put_job(job_id, status="succeeded", result=published, error=None,
+                    progress={"phase": "completed"},
+                    completed_at=utc_now() if retryable else record.get("completed_at", utc_now()))
 
 
 @app.function(image=control_image)
@@ -618,6 +743,11 @@ def health() -> dict[str, Any]:
         "max_containers": MAX_CONTAINERS,
         "volume": DATA_VOLUME_NAME,
         "dataset_sources": ["volume", "s3"],
+        "artifact_types": ["lora", "refmod"],
+        "artifact_storage": "s3",
+        "artifact_s3_prefix": S3_OUTPUT_PREFIX,
+        "refmod": {"input": "images_and_video", "video_extensions": sorted(VIDEO_SUFFIXES),
+                   "clip_modes": ["still", "motion"], "pause_resume": False, "output_root": str(REFMOD_ROOT)},
     }
 
 
@@ -631,6 +761,7 @@ def fetch_models(
     family: str = SUPPORTED_FAMILY,
     include_tools: bool = False,
     dry_run: bool = False,
+    include_optional: bool = False,
 ) -> dict[str, Any]:
     """Download one supported model family into the shared Volume."""
     if family not in SUPPORTED_FAMILIES:
@@ -647,6 +778,8 @@ def fetch_models(
         "--models-dir",
         str(MODEL_ROOT),
     ]
+    if include_optional:
+        command.append("--include-optional")
     if include_tools:
         command.extend(["--family", "tools"])
     if dry_run:
@@ -658,8 +791,10 @@ def fetch_models(
         "family": family,
         "models_dir": str(MODEL_ROOT),
         "dry_run": dry_run,
+        "include_optional": include_optional,
         "expected_models": {
-            name: str(path) for name, path in MODEL_PATHS[family].items()
+            name: str(path) for name, path in {**MODEL_PATHS[family],
+                **({"ref_dit": REFMOD_REF_DIT} if family == "minimax_h3" and include_optional else {})}.items()
         },
     }
 
@@ -725,6 +860,11 @@ def run_training(job_id: str, request: dict[str, Any]) -> dict[str, Any]:
         _put_job(job_id, progress={"phase": "finalizing"})
         result = _finalize_run(normalized, paths)
         data_volume.commit()
+        if not result["paused"]:
+            # Retain the local result before I/O so a failed upload can be retried
+            # on CPU without repeating training or overwriting the run.
+            _put_job(job_id, result=result, progress={"phase": "uploading_artifact"})
+            result = _publish_result(job_id, normalized, result)
         final_phase = "paused" if result["paused"] else "completed"
         record = _put_job(
             job_id,
@@ -751,15 +891,16 @@ def run_training(job_id: str, request: dict[str, Any]) -> dict[str, Any]:
     timeout=1800,
     secrets=[modal.Secret.from_name(S3_SECRET_NAME, required_keys=list(S3_REQUIRED_KEYS))],
 )
-def inspect_dataset(dataset_s3: str, verify_download: bool = False) -> dict[str, Any]:
+def inspect_dataset(dataset_s3: str, verify_download: bool = False, include_video: bool = False) -> dict[str, Any]:
     """Check an S3 prefix on CPU; optional downloads are discarded after verification."""
     client, bucket = create_s3_client()
     try:
         if verify_download:
             with TemporaryDirectory(prefix="fizgig-s3-check-") as temporary:
-                manifest = materialize_dataset(client, dataset_s3, bucket, Path(temporary) / "dataset")
+                manifest = materialize_dataset(client, dataset_s3, bucket, Path(temporary) / "dataset",
+                                               include_video=include_video)
         else:
-            manifest = plan_dataset(client, dataset_s3, bucket)
+            manifest = plan_dataset(client, dataset_s3, bucket, include_video=include_video)
         return {**dataset_summary(manifest), "download_verified": verify_download}
     finally:
         client.close()
@@ -771,6 +912,8 @@ def request_pause(job_id: str) -> dict[str, Any]:
     record = job_store.get(job_id)
     if record is None:
         raise ValueError("job not found")
+    if is_refmod(record.get("request", {})):
+        raise ValueError("RefMod jobs do not support pause/resume; use cancel to stop the job")
     if record.get("status") != "running":
         raise ValueError("only a running job can be paused")
     record.update(pause_requested=True, updated_at=utc_now())
