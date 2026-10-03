@@ -11,7 +11,7 @@ weights. The H3-specific SoL checkpoint is the refiner, not the H3 generator.
 Existing video + prompt -> SoL worker on Modal -> refined MP4
 ```
 
-Recommended deployment name: `sol-refiner`, with `sol_app.py` as its entrypoint.
+Recommended deployment name: `sol-refiner`, with `sol_refiner/app.py` as its entrypoint.
 The repository name does not determine which runtime Modal deploys. Keep existing
 WanGP files during development, but the Sol entrypoint must not import `app.py`,
 `control.py`, or `wangpt_common.py`: those modules construct WanGP resources or
@@ -74,17 +74,17 @@ Build a separate Sol image. The current image installs CUDA 13.0, PyTorch 2.10,
 WanGP, Wan2AI, and H3 plugins; it is not the upstream-tested Sol environment.
 Do not inherit it just to reuse S3 functions.
 
-Implementation files (usage: [Sol worker guide](docs/sol-refiner.md)):
+Implementation files (usage: [Sol worker guide](README.md)):
 
 ```text
-sol_app.py           Modal image, SolRefiner class, one-time model preparation
-sol_runtime.py       Upstream pipeline adapter, probing, refinement, encoding
-sol_control.py       Local refine/status client without WanGP imports
-sol_common.py        Sol names, request validation, result metadata
-sol_storage.py       Independent S3/HTTPS transfers and verified uploads
-sol_jobs.py          Job lifecycle and scratch cleanup
-sol_versions.py      Immutable code and model revisions
-tests/test_sol.py    Request, frame policy, job lifecycle, and output checks
+sol_refiner/app.py           Modal image, SolRefiner class, one-time model preparation
+sol_refiner/runtime.py       Upstream pipeline adapter, probing, refinement, encoding
+sol_refiner/control.py       Local refine/status client without WanGP imports
+sol_refiner/common.py        Sol names, request validation, result metadata
+sol_refiner/storage.py       Independent S3/HTTPS transfers and verified uploads
+sol_refiner/jobs.py          Job lifecycle and scratch cleanup
+sol_refiner/versions.py      Immutable code and model revisions
+sol_refiner/tests/test_sol.py    Request, frame policy, job lifecycle, and output checks
 ```
 
 Use a separate `sol-refiner-jobs` Modal Dict so Sol results cannot be mistaken

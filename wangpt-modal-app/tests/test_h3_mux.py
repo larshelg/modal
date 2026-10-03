@@ -76,7 +76,7 @@ def real_mux(tmp_path_factory):
     run("patch", "-p1", "-d", str(directory), "-i", str(patch))
 
     # Execute only the actual upstream mux/codec functions; no GPU imports needed.
-    names = {"combine_and_concatenate_video_with_audio_tracks", "get_mp4_audio_codec_settings", "get_audio_file_channels"}
+    names = {"combine_and_concatenate_video_with_audio_tracks", "get_mp4_audio_codec_settings", "get_video_audio_encode_args", "get_audio_file_channels"}
     tree = ast.parse(copy.read_text())
     tree.body = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names]
 

@@ -1,23 +1,25 @@
 # Sol-only Modal worker
 
-`sol_app.py` runs NVIDIA's H3-specific SoL refiner on an existing video and prompt.
+`sol_refiner/app.py` runs NVIDIA's H3-specific SoL refiner on an existing video and prompt.
 It has no WanGP imports, generation stage, model catalog, or H3 generator weights.
 The deployment is named `sol-refiner`, independently of this repository's name.
 
 ## Build and prepare
 
 Use the repository's Python environment (`uv sync` or `.venv/bin/python`). The
-examples below assume its Python is active and Modal authentication is configured.
+examples below run from the repository root with its Python environment active
+and Modal authentication configured. All Sol code, dependencies, examples, and
+tests live in `sol_refiner/`; see [DESIGN.md](DESIGN.md) for the design notes.
 
 ```bash
 # Build the image and check upstream imports/tests on CPU; no GPU or model download.
-python -m modal run sol_app.py::check
+python -m modal run -m sol_refiner.app::check
 
 # Download the pinned complete checkpoint into the persistent Volume, once.
-python -m modal run sol_app.py::prepare
+python -m modal run -m sol_refiner.app::prepare
 
 # Deploy only the Sol entrypoint.
-python -m modal deploy sol_app.py
+python -m modal deploy -m sol_refiner.app
 ```
 
 Required Modal secrets:
@@ -44,7 +46,7 @@ Use an existing short H3 MP4 with its original prompt. The local client requires
 64 MiB each; the normal service has a 1 GiB input cap.
 
 ```bash
-python -m modal run sol_control.py::smoke \
+python -m modal run -m sol_refiner.control::smoke \
   --input-file approved-h3.mp4 \
   --prompt 'A presenter explaining the weather in a television studio.' \
   --output-file sol-refined.mp4 \
@@ -59,12 +61,12 @@ load measurement; `first_request` identifies the first successful refinement.
 
 ## Submit an asynchronous job
 
-Create a request JSON (see `examples/sol-refine.json`) with the real source URI,
+Create a request JSON (see `sol_refiner/examples/sol-refine.json`) with the real source URI,
 prompt, and matching output aspect ratio:
 
 ```bash
-python -m modal run sol_control.py::refine --params-file request.json
-python -m modal run sol_control.py::status --job-id JOB_ID
+python -m modal run -m sol_refiner.control::refine --params-file request.json
+python -m modal run -m sol_refiner.control::status --job-id JOB_ID
 ```
 
 Inputs can be HTTPS URLs, including presigned URLs, or `s3://BUCKET/KEY` in the
@@ -86,7 +88,7 @@ it does not include queue time or container/model startup.
 Optionally generate a fresh download URL:
 
 ```bash
-python -m modal run sol_control.py::output_url --job-id JOB_ID --expires 3600
+python -m modal run -m sol_refiner.control::output_url --job-id JOB_ID --expires 3600
 ```
 
 This optional command requires the same S3 environment variables **locally**.
@@ -122,7 +124,7 @@ real H3 material before treating this as production-ready.
 Inspect an S3/HTTPS candidate on CPU before starting the GPU:
 
 ```bash
-python -m modal run sol_app.py::inspect --input-url s3://BUCKET/clip.mp4 \
+python -m modal run -m sol_refiner.app::inspect --input-url s3://BUCKET/clip.mp4 \
   --output-dir /tmp/sol-inspection
 ```
 
@@ -132,18 +134,18 @@ preview frames. Add `--save-video` to also download the inspected video, up to
 
 ## Reproducibility and validation
 
-Code and checkpoint pins are in `sol_versions.py`. GPU dependencies are resolved
-for Linux x86_64/Python 3.12 in `sol-requirements.lock`; NATTEN's specific CUDA 12.6
+Code and checkpoint pins are in `sol_refiner/versions.py`. GPU dependencies are resolved
+for Linux x86_64/Python 3.12 in `sol_refiner/requirements.lock`; NATTEN's specific CUDA 12.6
 binary wheel is pinned in the image. Rebuild/redeploy and restart warm containers
 after changing versions; prepare the model again when its revision changes.
 
 ```bash
-uv pip compile sol-requirements.in --python-version 3.12 \
+uv pip compile sol_refiner/requirements.in --python-version 3.12 \
   --python-platform x86_64-manylinux_2_28 \
   --extra-index-url https://download.pytorch.org/whl/cu126 \
-  --index-strategy unsafe-best-match --output-file sol-requirements.lock
+  --index-strategy unsafe-best-match --output-file sol_refiner/requirements.lock
 
-python -m pytest tests/test_sol.py -q
+python -m pytest sol_refiner/tests/test_sol.py -q
 ```
 
 The image build runs NVIDIA's CPU tests and verifies pipeline/NATTEN imports.
@@ -156,7 +158,7 @@ existing skips. The [CPU-only Modal build check](https://modal.com/apps/larshelg
 succeeded, including dependency consistency, Sol/NATTEN imports, and all five
 upstream contract tests. The pinned 32-file checkpoint (70,746,026,408 bytes) was
 prepared on `sol-refiner-models`, and the Sol-only service was deployed. The
-selected real-video test uses `examples/sol-h3-smoke.json`, which retains the
+selected real-video test uses `sol_refiner/examples/sol-h3-smoke.json`, which retains the
 source video's embedded generation prompt and explicitly enables frame padding.
 Full H100 inference validation is in progress.
 

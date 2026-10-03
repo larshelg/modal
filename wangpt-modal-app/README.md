@@ -1,8 +1,8 @@
 # WanGP Modal App
 
-For the **Sol-only video refiner**, use [the Sol worker guide](docs/sol-refiner.md)
-and deploy `sol_app.py`. That entrypoint has its own image, model Volume, and
-client (`sol_control.py`); it does not load WanGP. The documentation below covers
+For the **Sol-only video refiner**, use [the Sol worker guide](sol_refiner/README.md)
+and deploy `sol_refiner/app.py`. That entrypoint has its own image, model Volume, and
+client (`sol_refiner/control.py`); it does not load WanGP. The documentation below covers
 the existing WanGP entrypoint.
 
 This project runs asynchronous WanGP image, video, and audio generation on
@@ -52,6 +52,14 @@ WanGP and Wan2AI are pinned in the Modal image. Models, LoRAs, settings, input
 assets, and caches use the existing `wangp-data` Volume. Generated media is
 written to container-local scratch space, uploaded and verified in S3, then
 removed locally.
+
+WanGP is pinned in `wangpt_common.py` to
+[`b8b18f8114e432eea8f3d7e853a51dd91fa99571`](https://github.com/deepbeepmeep/Wan2GP/commit/b8b18f8114e432eea8f3d7e853a51dd91fa99571),
+the upstream `main` head checked on 2026-10-01. The H3 audio mux patch is rebased
+for this revision's audio encoding helper. All 146 local tests pass with
+`WANGP_TEST_ROOT` pointing to this revision, including the native FFmpeg regressions.
+The `wangpt-modal-app` deployment and its 237-model catalog were updated to this
+revision on 2026-10-01. GPU generation has not yet been smoke-tested after this upgrade.
 
 ## Deploy
 

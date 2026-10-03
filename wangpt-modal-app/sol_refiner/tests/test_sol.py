@@ -7,11 +7,11 @@ from types import SimpleNamespace
 
 import pytest
 
-import sol_control
-import sol_jobs
-import sol_storage
-from sol_common import validate_frame_count, validate_request
-from sol_runtime import encode_rgb_frames, probe_video, restore_audio, verify_output
+from sol_refiner import control as sol_control
+from sol_refiner import jobs as sol_jobs
+from sol_refiner import storage as sol_storage
+from sol_refiner.common import validate_frame_count, validate_request
+from sol_refiner.runtime import encode_rgb_frames, probe_video, restore_audio, verify_output
 
 
 def request(**overrides):
@@ -145,7 +145,7 @@ def test_successful_job_publishes_verified_artifact_and_metrics(monkeypatch):
 
 
 def test_variable_frame_timestamps_rejected(monkeypatch):
-    import sol_runtime
+    from sol_refiner import runtime as sol_runtime
 
     metadata = {"streams": [{"codec_type": "video", "codec_name": "h264", "width": 128,
                               "height": 128, "avg_frame_rate": "24/1", "duration": str(17 / 24)}]}
@@ -231,7 +231,7 @@ def test_encoder_preserves_fractional_frame_rate(clip, tmp_path):
 
 def test_sol_entrypoint_never_imports_wangp():
     import sys
-    result = subprocess.run([sys.executable, "-c", "import sol_app, sys; "
+    result = subprocess.run([sys.executable, "-c", "import sol_refiner.app, sol_refiner.control, sys; "
         "assert not {'app', 'control', 'wangpt_common', 'h3_latent'} & sys.modules.keys()"],
         capture_output=True, text=True)
     assert result.returncode == 0, result.stderr

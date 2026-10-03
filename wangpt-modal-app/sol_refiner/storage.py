@@ -12,7 +12,7 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-from sol_common import MAX_INPUT_BYTES, validate_url
+from sol_refiner.common import MAX_INPUT_BYTES, validate_url
 
 S3_KEYS = ("S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY", "S3_ENDPOINT", "S3_BUCKET", "S3_REGION")
 

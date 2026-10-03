@@ -8,7 +8,7 @@ from pathlib import Path
 
 import modal
 
-from sol_common import APP_NAME, JOB_DICT_NAME, TERMINAL_STATES, utc_now, validate_request
+from sol_refiner.common import APP_NAME, JOB_DICT_NAME, TERMINAL_STATES, utc_now, validate_request
 
 app = modal.App()
 jobs = modal.Dict.from_name(JOB_DICT_NAME, create_if_missing=True)
@@ -71,7 +71,7 @@ def status(job_id: str):
 def smoke(input_file: str, prompt: str, output_file: str = "sol-refined.mp4",
           width: int = 1344, height: int = 768, seed: int = 303000, decoder_seed: int = 20260826):
     """Run one local clip against the deployed worker and save the verified MP4."""
-    from sol_runtime import probe_video
+    from sol_refiner.runtime import probe_video
 
     source, target = Path(input_file), Path(output_file)
     metadata_path = target.with_suffix(target.suffix + ".json")
@@ -95,7 +95,7 @@ def smoke(input_file: str, prompt: str, output_file: str = "sol-refined.mp4",
 @app.local_entrypoint()
 def output_url(job_id: str, expires: int = 3600):
     """Generate a fresh URL locally rather than persisting expiring credentials."""
-    from sol_storage import s3_client
+    from sol_refiner.storage import s3_client
 
     if not 60 <= expires <= 604800:
         raise ValueError("expires must be between 60 and 604800 seconds")

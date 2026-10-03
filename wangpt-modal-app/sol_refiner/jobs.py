@@ -4,8 +4,8 @@ import tempfile
 import time
 from pathlib import Path
 
-from sol_common import utc_now, validate_request
-from sol_storage import download_input, s3_client, upload_output
+from sol_refiner.common import utc_now, validate_request
+from sol_refiner.storage import download_input, s3_client, upload_output
 
 
 def run_job(store, runtime, job_id: str, request: dict) -> dict:

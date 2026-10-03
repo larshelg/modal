@@ -13,7 +13,7 @@ from h3_latent import validate_plugin_data
 WORKER_APP_NAME = "wangpt-modal-app"
 JOB_DICT_NAME = "wangpt-modal-jobs"
 CATALOG_DICT_NAME = "wangpt-model-catalogs"
-WAN_COMMIT = "2345ae148f82740f66e82c41292dbbdd592e713d"
+WAN_COMMIT = "b8b18f8114e432eea8f3d7e853a51dd91fa99571"
 SINGULARITY_MODEL = "minimax_h3_ref2va_singularity_pruned"
 DATA_ROOT = Path("/data")
 

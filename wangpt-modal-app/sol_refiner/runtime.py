@@ -11,8 +11,8 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
-from sol_common import MAX_FRAMES, MAX_PIXELS, validate_frame_count
-from sol_versions import MODEL_REVISION, SANA_COMMIT
+from sol_refiner.common import MAX_FRAMES, MAX_PIXELS, validate_frame_count
+from sol_refiner.versions import MODEL_REVISION, SANA_COMMIT
 
 
 def _probe(path: Path, *options: str) -> dict:
@@ -121,7 +121,7 @@ def encode_rgb_frames(frames, destination: Path, width: int, height: int, fps: s
 def snapshot_path(root: Path = Path("/models")) -> Path:
     manifest = root / "manifests" / f"{MODEL_REVISION}.json"
     if not manifest.is_file():
-        raise RuntimeError("Sol model is not prepared. Run: modal run sol_app.py::prepare")
+        raise RuntimeError("Sol model is not prepared. Run: modal run -m sol_refiner.app::prepare")
     data = json.loads(manifest.read_text())
     if data.get("revision") != MODEL_REVISION:
         raise RuntimeError("Sol model manifest has the wrong revision")

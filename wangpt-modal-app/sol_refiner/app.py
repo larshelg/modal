@@ -1,4 +1,4 @@
-"""Deploy only SoL-Refiner: modal deploy sol_app.py."""
+"""Deploy only SoL-Refiner: modal deploy -m sol_refiner.app."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ from pathlib import Path
 
 import modal
 
-from sol_common import APP_NAME, JOB_DICT_NAME, MODEL_ID, MODEL_VOLUME_NAME, validate_request
-from sol_versions import MODEL_REVISION, SANA_COMMIT
+from sol_refiner.common import APP_NAME, JOB_DICT_NAME, MODEL_ID, MODEL_VOLUME_NAME, validate_request
+from sol_refiner.versions import MODEL_REVISION, SANA_COMMIT
 
 app = modal.App(APP_NAME)
 model_volume = modal.Volume.from_name(MODEL_VOLUME_NAME, create_if_missing=True)
@@ -22,12 +22,12 @@ NATTEN_WHEEL = (
 CACHE_ENV = {"HF_HOME": "/models/huggingface", "HF_HUB_CACHE": "/models/huggingface/hub"}
 download_image = modal.Image.debian_slim(python_version="3.12").pip_install(
     "huggingface-hub==1.33.0"
-).env(CACHE_ENV).add_local_python_source("sol_common", "sol_versions")
+).env(CACHE_ENV).add_local_python_source("sol_refiner")
 
 gpu_image = (
     modal.Image.from_registry("nvidia/cuda:12.6.3-cudnn-devel-ubuntu24.04", add_python="3.12")
     .apt_install("git", "ffmpeg", "libgl1", "libglib2.0-0")
-    .add_local_file(str(Path(__file__).with_name("sol-requirements.lock")),
+    .add_local_file(str(Path(__file__).with_name("requirements.lock")),
                     "/opt/sol-requirements.lock", copy=True)
     .run_commands(
         "python -m pip install --extra-index-url https://download.pytorch.org/whl/cu126 -r /opt/sol-requirements.lock",
@@ -43,7 +43,7 @@ gpu_image = (
         "python -c 'from sol_refiner_h3 import SoLRefinerH3Pipeline; from natten.functional import na3d'",
         f"cd {UPSTREAM} && python -m unittest discover -s tests -v",
     )
-    .add_local_python_source("sol_common", "sol_versions", "sol_storage", "sol_runtime", "sol_jobs")
+    .add_local_python_source("sol_refiner")
 )
 
 
@@ -79,13 +79,13 @@ def prepare_models() -> dict:
 class SolRefiner:
     @modal.enter()
     def load(self):
-        from sol_runtime import SolRuntime, snapshot_path
+        from sol_refiner.runtime import SolRuntime, snapshot_path
 
         self.runtime = SolRuntime(snapshot_path())
 
     @modal.method()
     def refine(self, job_id: str, request: dict) -> dict:
-        from sol_jobs import run_job
+        from sol_refiner.jobs import run_job
 
         return run_job(jobs, self.runtime, job_id, request)
 
@@ -121,8 +121,8 @@ def check_environment() -> dict:
 def inspect_input(input_url: str, save_video: bool = False) -> dict:
     """Inspect a candidate on CPU before allocating the refinement GPU."""
     import subprocess
-    from sol_runtime import _probe, probe_video
-    from sol_storage import download_input
+    from sol_refiner.runtime import _probe, probe_video
+    from sol_refiner.storage import download_input
 
     with tempfile.TemporaryDirectory(prefix="sol-inspect-") as temporary:
         directory = Path(temporary)

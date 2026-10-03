@@ -1,6 +1,6 @@
 --- a/shared/utils/audio_video.py
 +++ b/shared/utils/audio_video.py
-@@ -548,8 +548,11 @@
+@@ -550,8 +550,11 @@
      new_audio_from_start=False,
      source_audio_metadata=None,
      audio_codec_key="aac_128",
@@ -10,9 +10,9 @@
  ):
 +    if video_duration is not None and not 0 < video_duration < float("inf"):
 +        raise ValueError("video_duration must be finite and positive")
-     audio_settings = get_mp4_audio_codec_settings(audio_codec_key)
-     audio_codec = audio_settings["codec"]
-     audio_bitrate = audio_settings["bitrate"]
+     audio_codec = get_mp4_audio_codec_settings(audio_codec_key)["codec"]
+     inputs, filters, maps, idx = ['-i', video_path], [], ['-map', '0:v'], 1
+     metadata_args = []
 @@ -613,7 +616,16 @@
              else:
                  filters.append(f'[s{i}]apad=pad_dur=100[aout{i}]')
@@ -31,15 +31,12 @@
  
      cmd = [_ffmpeg_binary(), '-y', *inputs,
             '-filter_complex', ';'.join(filters),  # ✅ Only change made
-@@ -621,9 +633,9 @@
+@@ -621,7 +633,7 @@
             '-c:v', 'copy',
-            '-c:a', audio_codec,
+            *get_video_audio_encode_args(audio_codec_key),
             '-ar', str(audio_sampling_rate),
 -           '-shortest', save_path_tmp]
 +           *(['-shortest'] if video_duration is None else []), save_path_tmp]
-     if audio_bitrate:
--        cmd[-4:-4] = ['-b:a', audio_bitrate]
-+        cmd[-1:-1] = ['-b:a', audio_bitrate]
  
      if verbose:
          print(f"ffmpeg command: {cmd}")
