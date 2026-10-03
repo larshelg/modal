@@ -1,0 +1,7 @@
+{
+  "family": "krea2",
+  "dataset_s3": "s3://YOUR_BUCKET/datasets/linda/",
+  "output_name": "linda_s3_v1",
+  "preset": "krea2_defaults",
+  "trigger_word": "linda"
+}

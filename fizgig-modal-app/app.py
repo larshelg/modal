@@ -15,6 +15,7 @@ import threading
 import time
 from collections import deque
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 import modal
@@ -29,6 +30,11 @@ from fizgig_common import (
     utc_now,
     validate_component,
     validate_training_request,
+)
+
+from fizgig_s3 import (
+    S3_SECRET_NAME, S3_REQUIRED_KEYS, create_s3_client, dataset_summary,
+    plan_dataset, materialize_dataset, load_dataset_snapshot,
 )
 
 
@@ -77,7 +83,8 @@ job_store = modal.Dict.from_name(JOB_DICT_NAME, create_if_missing=True)
 
 control_image = (
     modal.Image.debian_slim(python_version="3.11")
-    .add_local_python_source("fizgig_common", copy=True)
+    .pip_install("boto3>=1.40,<2")
+    .add_local_python_source("fizgig_common", "fizgig_s3", copy=True)
 )
 
 fizgig_image = (
@@ -117,6 +124,7 @@ fizgig_image = (
         f"python {FIZGIG_SCRIPTS}/minimax_cache_text.py --help > /dev/null",
         f"python {FIZGIG_SCRIPTS}/minimax_train.py --help > /dev/null",
     )
+    .pip_install("boto3>=1.40,<2")
     # Copy local code before declaring cache paths under the future Volume
     # mount. Otherwise the copy layer can materialize those cache directories
     # in the image, and Modal refuses to mount a Volume over a non-empty path.
@@ -125,7 +133,7 @@ fizgig_image = (
         remote_path=str(CAPTION_SCRIPT),
         copy=True,
     )
-    .add_local_python_source("fizgig_common", copy=True)
+    .add_local_python_source("fizgig_common", "fizgig_s3", copy=True)
     .env(
         {
             "FIZGIG_HOME": str(FIZGIG_DATA_ROOT),
@@ -162,8 +170,11 @@ def require_data_path(path: str | os.PathLike[str], *, root: Path = DATA_ROOT) -
 
 
 def paths_for_request(request: dict[str, Any]) -> dict[str, Path]:
-    dataset_dir = require_data_path(DATASET_ROOT / request["dataset"], root=FIZGIG_DATA_ROOT)
     run_dir = require_data_path(RUN_ROOT / request["output_name"], root=FIZGIG_DATA_ROOT)
+    dataset_dir = (
+        run_dir / "dataset" if request.get("dataset_s3") else
+        require_data_path(DATASET_ROOT / request["dataset"], root=FIZGIG_DATA_ROOT)
+    )
     return {
         "dataset_dir": dataset_dir,
         "image_dir": dataset_dir / "images",
@@ -516,17 +527,8 @@ def _run_stage(job_id: str, phase: str, command: list[str], pause_path: Path) ->
     _put_job(job_id, progress={"phase": phase, "log_tail": list(tail)})
 
 
-def _prepare_run(request: dict[str, Any], paths: dict[str, Path]) -> None:
+def _prepare_run(request: dict[str, Any], paths: dict[str, Path], *, progress=None) -> dict[str, Any] | None:
     _ensure_layout()
-    if not paths["image_dir"].is_dir():
-        raise ValueError(f"dataset images directory does not exist: {paths['image_dir']}")
-    if not any(
-        path.is_file() and path.suffix.lower() in _IMAGE_SUFFIXES
-        for path in paths["image_dir"].iterdir()
-    ):
-        raise ValueError(
-            f"dataset images directory contains no supported images: {paths['image_dir']}"
-        )
     if (
         paths["run_dir"].exists()
         and any(paths["run_dir"].iterdir())
@@ -536,13 +538,39 @@ def _prepare_run(request: dict[str, Any], paths: dict[str, Path]) -> None:
             f"run directory already contains data: {paths['run_dir']}; "
             "choose a new output_name or resume"
         )
+    dataset = None
+    if request.get("dataset_s3"):
+        if request["resume_from"]:
+            manifest = load_dataset_snapshot(paths["dataset_dir"], request["dataset_s3"])
+        else:
+            client, bucket = create_s3_client()
+            try:
+                manifest = materialize_dataset(
+                    client, request["dataset_s3"], bucket, paths["dataset_dir"], progress=progress,
+                )
+            finally:
+                client.close()
+        dataset = {**dataset_summary(manifest), "snapshot_path": str(paths["dataset_dir"])}
+    if not paths["image_dir"].is_dir():
+        raise ValueError(f"dataset images directory does not exist: {paths['image_dir']}")
+    images = [
+        path for path in paths["image_dir"].iterdir()
+        if path.is_file() and path.suffix.lower() in _IMAGE_SUFFIXES
+    ]
+    if not images:
+        raise ValueError(f"dataset images directory contains no supported images: {paths['image_dir']}")
+    if request.get("dataset_s3") and request["family"] == "minimax_h3":
+        missing = [path for path in images if not path.with_suffix(".txt").is_file()
+                   or not path.with_suffix(".txt").read_text(encoding="utf-8").strip()]
+        if missing:
+            raise ValueError(f"MiniMax H3 requires non-empty .txt captions; {len(missing)} images are missing captions")
     paths["cache_dir"].mkdir(parents=True, exist_ok=True)
     paths["run_dir"].mkdir(parents=True, exist_ok=True)
     paths["config_path"].write_text(
-        dataset_config_text(paths["image_dir"], paths["cache_dir"]),
-        encoding="utf-8",
+        dataset_config_text(paths["image_dir"], paths["cache_dir"]), encoding="utf-8",
     )
     paths["pause_path"].unlink(missing_ok=True)
+    return dataset
 
 
 def _verify_models(request: dict[str, Any]) -> None:
@@ -589,6 +617,7 @@ def health() -> dict[str, Any]:
         "gpu": GPU_TYPE,
         "max_containers": MAX_CONTAINERS,
         "volume": DATA_VOLUME_NAME,
+        "dataset_sources": ["volume", "s3"],
     }
 
 
@@ -645,7 +674,10 @@ def fetch_models(
     startup_timeout=STARTUP_TIMEOUT,
     timeout=TRAINING_TIMEOUT,
     volumes={str(DATA_ROOT): data_volume},
-    secrets=[modal.Secret.from_name("huggingface-secret", required_keys=["HF_TOKEN"])],
+    secrets=[
+        modal.Secret.from_name("huggingface-secret", required_keys=["HF_TOKEN"]),
+        modal.Secret.from_name(S3_SECRET_NAME, required_keys=list(S3_REQUIRED_KEYS)),
+    ],
 )
 def run_training(job_id: str, request: dict[str, Any]) -> dict[str, Any]:
     """Run a supported Fizgig cache-and-train pipeline."""
@@ -665,8 +697,26 @@ def run_training(job_id: str, request: dict[str, Any]) -> dict[str, Any]:
         progress={"phase": "preparing_dataset"},
     )
     try:
-        _prepare_run(normalized, paths)
+        data_volume.reload()
         _verify_models(normalized)
+        last_progress = 0.0
+
+        def download_progress(done, total, downloaded, total_bytes):
+            nonlocal last_progress
+            now = time.monotonic()
+            if done == total or now - last_progress >= 2:
+                _put_job(job_id, progress={
+                    "phase": "downloading_dataset", "files_downloaded": done,
+                    "files_total": total, "bytes_downloaded": downloaded, "bytes_total": total_bytes,
+                })
+                last_progress = now
+
+        if normalized.get("dataset_s3") and not normalized["resume_from"]:
+            _put_job(job_id, progress={"phase": "downloading_dataset"})
+        dataset = _prepare_run(normalized, paths, progress=download_progress)
+        if dataset:
+            data_volume.commit()
+            _put_job(job_id, dataset=dataset)
         for phase, command in build_pipeline_commands(normalized, paths):
             _run_stage(job_id, phase, command, paths["pause_path"])
             if phase != "training":
@@ -694,6 +744,25 @@ def run_training(job_id: str, request: dict[str, Any]) -> dict[str, Any]:
                 completed_at=utc_now(),
             )
         raise
+
+
+@app.function(
+    image=control_image,
+    timeout=1800,
+    secrets=[modal.Secret.from_name(S3_SECRET_NAME, required_keys=list(S3_REQUIRED_KEYS))],
+)
+def inspect_dataset(dataset_s3: str, verify_download: bool = False) -> dict[str, Any]:
+    """Check an S3 prefix on CPU; optional downloads are discarded after verification."""
+    client, bucket = create_s3_client()
+    try:
+        if verify_download:
+            with TemporaryDirectory(prefix="fizgig-s3-check-") as temporary:
+                manifest = materialize_dataset(client, dataset_s3, bucket, Path(temporary) / "dataset")
+        else:
+            manifest = plan_dataset(client, dataset_s3, bucket)
+        return {**dataset_summary(manifest), "download_verified": verify_download}
+    finally:
+        client.close()
 
 
 @app.function(image=control_image)

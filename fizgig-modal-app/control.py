@@ -15,6 +15,7 @@ from fizgig_common import (
     SUPPORTED_FAMILIES,
     TERMINAL_STATUSES,
     training_intent,
+    normalize_dataset_s3,
     utc_now,
     validate_component,
 )
@@ -133,7 +134,7 @@ def resume_training_job(job_id: str) -> dict[str, Any]:
     # the intent fields, preserving the family, preset, epoch count and trigger.
     request = {
         key: record["request"][key]
-        for key in ("family", "dataset", "output_name", "preset", "trigger_word", "epochs")
+        for key in ("family", "dataset", "dataset_s3", "output_name", "preset", "trigger_word", "epochs")
         if record["request"].get(key) is not None
     }
     request["resume_from"] = result.get("resume_from") or "latest"
@@ -179,14 +180,19 @@ def health() -> None:
 @app.local_entrypoint()
 def submit(
     family: str,
-    dataset: str,
     output_name: str,
     preset: str,
+    dataset: str = "",
+    dataset_s3: str = "",
     trigger_word: str = "",
     epochs: int = 0,
 ) -> None:
     """Submit typed training intent; zero epochs means the preset default."""
-    request = {"family": family, "dataset": dataset, "output_name": output_name, "preset": preset}
+    request = {"family": family, "output_name": output_name, "preset": preset}
+    if dataset:
+        request["dataset"] = dataset
+    if dataset_s3:
+        request["dataset_s3"] = dataset_s3
     if trigger_word:
         request["trigger_word"] = trigger_word
     if epochs != 0:
@@ -227,3 +233,11 @@ def fetch_models(family: str, dry_run: bool = False) -> None:
         raise ValueError(f"family must be one of: {', '.join(SUPPORTED_FAMILIES)}")
     function = modal.Function.from_name(APP_NAME, "fetch_models")
     print_json(function.remote(family, False, dry_run))
+
+
+@app.local_entrypoint()
+def dataset_info(dataset_s3: str, verify_download: bool = False) -> None:
+    """Inspect an S3 dataset on CPU, optionally verifying downloads in temporary storage."""
+    uri = normalize_dataset_s3(dataset_s3)
+    function = modal.Function.from_name(APP_NAME, "inspect_dataset")
+    print_json(function.remote(uri, verify_download))

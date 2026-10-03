@@ -27,7 +27,11 @@ Training supports **Krea2** and **MiniMax H3**. Preserve the user's selected
 family. Establish the dataset, unique output name, family-compatible preset,
 and any trigger/epoch override before submitting; infer established choices
 from the conversation rather than requesting redundant confirmation.
-Datasets must exist at `/data/fizgig/datasets/<dataset>/images`.
+Use exactly one input: `--dataset NAME` for images already at
+`/data/fizgig/datasets/<dataset>/images`, or `--dataset-s3 s3://bucket/prefix/`
+for an S3 folder. S3 uses the existing `studio-s3` secret and its configured
+bucket; the local client does not need S3 credentials. Do not require a Volume
+upload for an S3 source. The new source requires the S3-capable worker deployment.
 
 For Krea2 identity training, use `krea2_defaults` unless the user asks for
 `krea2_ultra_fast`. Missing captions are generated with Qwen3-VL; existing
@@ -60,6 +64,25 @@ Never report success from logs alone or treat a failed dispatch as a queued job.
 Use only the typed client request. Do not run upstream training scripts locally
 or pass raw Fizgig CLI arguments. The worker constructs its pinned headless
 pipeline. Keep Eve integration out of this workflow until the Codex flow is proven.
+
+## S3 dataset checks
+
+Before an S3 training run, the CPU-only check can confirm the intended folder:
+
+```bash
+python3 -m modal run fizgig-modal-app/control.py::dataset_info \
+  --dataset-s3 s3://BUCKET/datasets/linda/
+```
+
+Add `--verify-download` when transfer verification is requested; it stages files
+in temporary CPU-container storage and discards them, without starting training.
+It does not decode images. Nested images and matching caption sidecars are
+flattened to collision-safe names. H3 needs a non-empty caption for every image.
+
+Training keeps a run-specific local snapshot on the Modal Volume for captions,
+caches, and resume. Resume reuses that snapshot without rereading S3. A changed
+S3 dataset needs a new output name/run. Nothing is written back to the source.
+See [REFERENCE.md](REFERENCE.md) for limits and storage paths.
 
 ## WanGP generation
 

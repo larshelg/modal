@@ -12,9 +12,10 @@ The source of truth for presets and validation is
 `fizgig-modal-app/app.py`. Do not invoke upstream training scripts outside the
 worker.
 
-The request contains required `family`, `dataset`, `output_name`, and `preset`;
-optional `trigger_word` and `epochs` (integer 1–500) are the only public
-training overrides. `resume_from` is controlled by the resume operation.
+The request requires `family`, `output_name`, `preset`, and exactly one of
+`dataset` (a prepared Volume dataset name) or `dataset_s3` (an S3 folder URI).
+Optional `trigger_word` and `epochs` (integer 1–500) are the public training
+overrides. `resume_from` is controlled by the resume operation.
 Seeds, caption behavior, checkpoint cadence, and preview behavior come from
 the worker preset.
 
@@ -112,6 +113,40 @@ then trains with per-image loss/LR tracking and Qwen3-VL recaptioning. Existing
 non-empty captions are preserved. Checkpoints are saved each epoch and the
 last two state directories are retained. Only the unnumbered final LoRA is
 automatically copied to `/data/loras`; numbered checkpoints remain in the run.
+
+## S3 datasets
+
+Use `dataset_s3: "s3://BUCKET/datasets/linda/"` instead of `dataset`. It uses
+`studio-s3` with `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_ENDPOINT`,
+`S3_BUCKET`, and `S3_REGION`, using the same path-style S3 client as WanGP.
+The bucket must equal the configured `S3_BUCKET`; raw credentials, HTTPS URLs,
+query strings, fragments, and traversal segments are rejected.
+
+`control.py::dataset_info --dataset-s3 URI` calls the deployed CPU-only
+`inspect_dataset` function. It lists the prefix with pagination and reports
+image/caption counts and bytes. `--verify-download` stages and verifies all
+transfers in temporary storage and discards them; it does not decode images,
+create a training run, or start a GPU.
+
+Training downloads images and matching `.txt` sidecars recursively, flattens
+them to deterministic hash filenames, and persists a manifest of original
+object keys, ETags, sizes and SHA-256 hashes. Images accepted: JPG/JPEG, PNG,
+WEBP and BMP. Sidecars share the original image stem in the same S3 directory.
+Other files and unpaired captions are ignored. Limits: 5,000 images, 20,000
+listed objects, 128 MiB per image, 1 MiB per caption, and 10 GiB total.
+Krea2 generates missing/empty captions; H3 fails preparation if any are missing.
+
+Downloads use ETag preconditions, streaming size bounds, and SHA-256 metadata
+verification when available. A partial import is cleaned up and never published
+as a training dataset. The complete snapshot is retained at
+`/data/fizgig/runs/<output_name>/dataset`, with `images/`, `cache/`,
+`manifest.json`, and `dataset.toml`. No writes go to S3. Status reports
+`downloading_dataset` with transfer progress and a `dataset` summary afterward.
+
+Resume verifies the saved image hashes and reuses the local snapshot, including
+captions improved during training. It does not consult S3 or reset captions.
+To pick up changes in the S3 prefix, submit a new output name. Final LoRAs and
+checkpoints retain their existing Volume destinations.
 
 ## Artifact operations
 

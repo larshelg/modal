@@ -8,7 +8,7 @@ No REST app, endpoint URL, or HTTP proxy credentials are required.
 ## Client and worker
 
 - `app.py` deploys `fizgig-modal-app`, with `run_training`, `request_pause`,
-  `health`, and `fetch_models` functions.
+  `health`, `fetch_models`, and `inspect_dataset` functions.
 - `control.py` has only local entrypoints. It validates requests, spawns the
   stable deployed worker, and polls/cancels Modal FunctionCalls.
 - `fizgig_common.py` shares request validation and presets between client and
@@ -61,12 +61,15 @@ uv run modal run control.py::health
 ```
 
 The existing `huggingface-secret` Modal secret must contain `HF_TOKEN`.
+The same `studio-s3` secret used by WanGP supplies `S3_ACCESS_KEY_ID`,
+`S3_SECRET_ACCESS_KEY`, `S3_ENDPOINT`, `S3_BUCKET`, and `S3_REGION` for S3 inputs.
+The local client needs only Modal authentication; it never needs S3 credentials.
 Optional deployment settings are `FIZGIG_GPU` and `FIZGIG_MAX_CONTAINERS`.
 Do not deploy `control.py`; it runs locally and constructs no worker image.
 Health calls the small deployed CPU function, without starting a GPU.
 
-The direct client also works with an existing deployment exposing the four
-functions above; adopting the client does not itself require redeployment.
+Deploy this revision before using S3 datasets. The older Volume-dataset client
+continues to work with the existing training functions.
 The legacy REST service is not consulted or shut down by this change.
 Use normal Modal SDK credentials, not `MODAL_KEY`/`MODAL_SECRET` proxy headers.
 
@@ -100,6 +103,70 @@ uv run modal volume ls wangp-data /fizgig/datasets/linda/images
 Krea2 generates missing/empty `.txt` captions with Qwen3-VL and preserves
 existing non-empty captions. H3 requires prepared caption sidecars.
 
+## Use an S3 dataset folder
+
+Pass `--dataset-s3` instead of `--dataset`; no prior Modal Volume upload is needed:
+
+```bash
+uv run modal run control.py::dataset_info \
+  --dataset-s3 s3://YOUR_BUCKET/datasets/linda/
+
+uv run modal run control.py::submit \
+  --family krea2 \
+  --dataset-s3 s3://YOUR_BUCKET/datasets/linda/ \
+  --output-name linda_s3_v1 \
+  --preset krea2_defaults \
+  --trigger-word linda
+```
+
+The CPU-only `dataset_info` command reports image count, matching caption count,
+missing sidecars, and total download size. Add `--verify-download` to download
+and check the whole dataset in temporary CPU-container storage, then discard it.
+This does not start training or create a run. It verifies transfers; it does not
+decode images or test model training.
+
+Fizgig needs writable local files for captions and caches. The training worker
+lists the S3 prefix, downloads images and matching `.txt` sidecars, verifies
+sizes and available SHA-256 metadata, and publishes a complete snapshot at:
+
+```text
+/data/fizgig/runs/<output_name>/dataset/images/
+/data/fizgig/runs/<output_name>/dataset/manifest.json
+/data/fizgig/runs/<output_name>/dataset/cache/
+/data/fizgig/runs/<output_name>/dataset/dataset.toml
+```
+
+Downloads use a temporary staging directory on the same Volume; failed transfers
+are cleaned up and cannot become a training dataset. The completed snapshot,
+captions and caches are retained with the run so pause/resume survives container
+restarts. Resume checks image hashes and reuses this snapshot without contacting
+S3 or overwriting generated captions. To use an updated S3 folder, start a new
+run with a new output name. Nothing is written back to S3.
+
+S3 folders are prefixes and include subfolders. The importer accepts `.jpg`,
+`.jpeg`, `.png`, `.webp`, and `.bmp`, pairing each image with an adjacent `.txt`
+file of the same stem. It flattens paths to deterministic hash filenames to avoid
+collisions such as `front/photo.jpg` and `side/photo.jpg`; the manifest records
+the original object keys. Other file types and unpaired captions are not imported.
+Krea2 creates missing/empty captions; H3 requires non-empty captions for every image.
+
+The bucket must match `S3_BUCKET` in `studio-s3`. Supply an `s3://bucket/prefix/`
+URI, not an HTTPS or presigned URL. The importer uses the configured S3-compatible
+endpoint and path-style addressing, as WanGP does. An ETag precondition rejects
+objects changed between listing and download.
+
+Limits per import: 5,000 images, 20,000 listed objects, 128 MiB per image,
+1 MiB per caption, and 10 GiB total staged data. Progress appears as
+`downloading_dataset`, including file and byte counts. Job status includes a
+`dataset` summary and snapshot path. Model weights, checkpoints and the final
+LoRA continue to use their existing Modal Volume locations.
+
+The equivalent JSON request is in `request.s3.example.json`:
+
+```bash
+uv run modal run control.py::submit_file --request-file request.s3.example.json
+```
+
 ## Submit and inspect training
 
 ```bash
@@ -127,8 +194,9 @@ without `--detach`. Status polls once and reports worker phase/epoch progress;
 `--logs` includes the diagnostic log tail. Container startup failures are
 reconciled into the persistent job record.
 
-Requests accept only `family`, `dataset`, `output_name`, `preset`, optional
-`trigger_word`, and optional `epochs`. Resume is controlled by the resume
+Requests require `family`, `output_name`, `preset`, and exactly one of `dataset`
+(a prepared Volume dataset name) or `dataset_s3` (an S3 folder URI).
+`trigger_word` and `epochs` are optional. Resume is controlled by the resume
 command. Raw CLI arguments and arbitrary model/filesystem paths are rejected.
 
 For Krea2, the worker captions images, caches latents and text, then trains

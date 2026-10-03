@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import quote, unquote, urlsplit
 
 APP_NAME = "fizgig-modal-app"
 DATA_VOLUME_NAME = "wangp-data"
@@ -64,6 +65,7 @@ _SAFE_COMPONENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _ALLOWED_REQUEST_KEYS = {
     "family",
     "dataset",
+    "dataset_s3",
     "output_name",
     "preset",
     "trigger_word",
@@ -106,7 +108,7 @@ def validate_training_request(request: dict[str, Any]) -> dict[str, Any]:
 
     missing = sorted(
         field
-        for field in ("family", "dataset", "output_name", "preset")
+        for field in ("family", "output_name", "preset")
         if field not in request
     )
     if missing:
@@ -117,7 +119,12 @@ def validate_training_request(request: dict[str, Any]) -> dict[str, Any]:
         choices = ", ".join(SUPPORTED_FAMILIES)
         raise ValueError(f"family must be one of: {choices}")
 
-    dataset = validate_component(request["dataset"], "dataset")
+    has_dataset = request.get("dataset") is not None
+    has_s3 = request.get("dataset_s3") is not None
+    if has_dataset == has_s3:
+        raise ValueError("provide exactly one of dataset or dataset_s3")
+    dataset = validate_component(request["dataset"], "dataset") if has_dataset else None
+    dataset_s3 = normalize_dataset_s3(request["dataset_s3"]) if has_s3 else None
     output_name = validate_component(request["output_name"], "output_name")
     preset_name = request["preset"]
     if not isinstance(preset_name, str) or preset_name not in SUPPORTED_PRESETS:
@@ -143,6 +150,7 @@ def validate_training_request(request: dict[str, Any]) -> dict[str, Any]:
         **preset,
         "family": family,
         "dataset": dataset,
+        "dataset_s3": dataset_s3,
         "output_name": output_name,
         "preset": preset_name,
         "trigger_word": trigger_word,
@@ -163,3 +171,25 @@ def training_intent(request: dict[str, Any], *, allow_resume: bool = False) -> d
         for key in _ALLOWED_REQUEST_KEYS
         if normalized.get(key) is not None
     }
+
+
+def parse_dataset_s3(uri: str, configured_bucket: str | None = None) -> tuple[str, str]:
+    """Accept a bucket-scoped S3 folder, never credentials or a presigned URL."""
+    if not isinstance(uri, str) or any(ord(char) < 32 for char in uri):
+        raise ValueError("dataset_s3 must use s3://BUCKET/PREFIX/")
+    parsed = urlsplit(uri)
+    if (parsed.scheme != "s3" or not re.fullmatch(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]", parsed.netloc)
+            or parsed.query or parsed.fragment):
+        raise ValueError("dataset_s3 must use s3://BUCKET/PREFIX/ without credentials, query or fragment")
+    if configured_bucket is not None and parsed.netloc != configured_bucket:
+        raise ValueError("dataset_s3 bucket does not match configured S3_BUCKET")
+    prefix = unquote(parsed.path.removeprefix("/"))
+    if (not prefix.strip("/") or "\\" in prefix or any(ord(char) < 32 for char in prefix)
+            or any(part in {".", "..", ""} for part in prefix.removesuffix("/").split("/"))):
+        raise ValueError("dataset_s3 must name a non-empty folder prefix without traversal")
+    return parsed.netloc, prefix.rstrip("/") + "/"
+
+
+def normalize_dataset_s3(uri: str) -> str:
+    bucket, prefix = parse_dataset_s3(uri)
+    return f"s3://{bucket}/{quote(prefix, safe='/')}"
