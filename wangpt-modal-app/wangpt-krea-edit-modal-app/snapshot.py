@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import copy
+from importlib import import_module
 import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 
 from h3_latent import native_task
-from h3_snapshot import active_lora_files, create_reference, emit_snapshot, memory_report
-from krea_snapshot import WARMUP_PARAMS as BASE_WARMUP_PARAMS
-from krea_snapshot import validate_residency as validate_base_residency
+from snapshot_common import active_lora_files, create_reference, emit_snapshot, memory_report
+_base_snapshot = import_module("wangpt-krea-modal-app.snapshot")
+BASE_WARMUP_PARAMS = _base_snapshot.WARMUP_PARAMS
+validate_base_residency = _base_snapshot.validate_residency
 
 KREA_EDIT_MODEL = "krea2_turbo_edit"
 KREA_EDIT_APP_NAME = "wangpt-krea-edit-modal-app"

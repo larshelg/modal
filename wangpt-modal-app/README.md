@@ -21,6 +21,34 @@ Dict.
 
 ## Architecture
 
+The independent model snapshot apps live in folders named after their Modal
+deployments:
+
+- [wangpt-krea-modal-app](wangpt-krea-modal-app/README.md)
+- [wangpt-krea-raw-modal-app](wangpt-krea-raw-modal-app/README.md)
+- [wangpt-krea-raw-edit-modal-app](wangpt-krea-raw-edit-modal-app/README.md)
+- [wangpt-krea-edit-modal-app](wangpt-krea-edit-modal-app/README.md)
+- [wangpt-qwen-image-21-modal-app](wangpt-qwen-image-21-modal-app/README.md)
+- [wangpt-qwen-noctq-modal-app](wangpt-qwen-noctq-modal-app/README.md)
+
+Each folder contains `app.py`, `snapshot.py`, `README.md`, `examples/` and
+`tests/`. Shared runtime code, model definitions and `control.py` remain at the
+workspace root. Run commands from that root, using Modal module mode for these
+packages; for example:
+
+```bash
+.venv/bin/python -m modal deploy -m wangpt-qwen-noctq-modal-app.app
+```
+
+Hyphenated folder names are loaded through Python's module importer; use `-m`
+when deploying these apps so their relative imports resolve correctly.
+
+`snapshot_common.py` holds shared memory reporting, snapshot logging, random
+reseeding, model-load tracking, active LoRA inspection and synthetic reference
+creation. All snapshot workers include it in their images. Model-specific
+warmup and residency checks live in each app's `snapshot.py`; Singularity uses
+`h3_snapshot.py` for its H3-specific logic.
+
 The worker app in `app.py` contains:
 
 - `WanGPImageWorker`: H100 image/audio execution pool.
@@ -97,7 +125,7 @@ After adding new Volume files, use a fresh worker container so it sees the
 latest Volume snapshot; warm workers do not reload open model files.
 
 Redeploy `app.py` and run `control.py::refresh_catalog` to activate this change.
-The independent `krea_app.py` deployment is unaffected until separately deployed.
+The independent `wangpt-krea-modal-app/app.py` deployment is unaffected until separately deployed.
 
 ### Experimental numbered image and video RefMods
 
@@ -303,7 +331,7 @@ during slow model loading.
 
 ## Krea2 Turbo L40S snapshot worker
 
-`krea_app.py` deploys `WanGPKreaWorker` in the independent Modal app
+`wangpt-krea-modal-app/app.py` deploys `WanGPKreaWorker` in the independent Modal app
 `wangpt-krea-modal-app`. It accepts only `krea2_turbo` and retains the existing
 `run(job_id, model, params)` contract, shared job store, and verified S3 outputs.
 It shares the pinned WanGP image build/runtime with the other workers. Deploying
@@ -322,21 +350,70 @@ failed restoration. Per-request diagnostics report pipeline reuse and native
 model-loader calls. User LoRAs load normally during requests.
 
 ```bash
-.venv/bin/python -m modal deploy krea_app.py
+.venv/bin/python -m modal deploy -m wangpt-krea-modal-app.app
 python3 -m modal run control.py::krea_snapshot_probe
 WANGP_KREA_SNAPSHOT=1 python3 -m modal run control.py::submit \
-  --model krea2_turbo --kind image --params-file examples/krea2_turbo.json
+  --model krea2_turbo --kind image --params-file wangpt-krea-modal-app/examples/krea2_turbo.json
 ```
 
 The CLI flag is opt-in and affects only the exact image model `krea2_turbo`;
 other models, including `krea2_turbo_edit`, retain their normal routes. A direct
 TypeScript client can look up `WanGPKreaWorker` in `wangpt-krea-modal-app` and call
 `run` with its existing job ID, model, and native parameters. No CLI flag is
-needed for direct class calls. See [Krea validation](docs/krea-snapshot.md).
+needed for direct class calls. See [Krea validation](wangpt-krea-modal-app/README.md).
+
+## Krea2 RAW L40S snapshot worker
+
+`wangpt-krea-raw-modal-app/app.py` deploys `WanGPKreaRawWorker` independently in
+`wangpt-krea-raw-modal-app`, accepting only the base model `krea2_raw`. It uses
+L40S, WanGP profile 1, 64 GiB host RAM, zero minimum containers, one maximum
+container and a 300-second idle timeout. The runtime, job store, Volume and S3
+handling are shared with the other workers.
+
+Private warmup uses 1024x1024, 52 steps, guidance 3.5 and flow shift 5. Capture
+keeps the transformer on CUDA and text encoder/VAE on CPU, without active
+LoRAs. Shared lifecycle and diagnostic helpers come from `snapshot_common.py`.
+
+```bash
+.venv/bin/python -m modal deploy -m wangpt-krea-raw-modal-app.app
+.venv/bin/python -m modal run control.py::krea_raw_snapshot_probe
+WANGP_KREA_RAW_SNAPSHOT=1 .venv/bin/python -m modal run control.py::submit \
+  --model krea2_raw --kind image \
+  --params-file wangpt-krea-raw-modal-app/examples/krea2_raw.json
+```
+
+The flag affects only this exact image model. Deployment settings use
+`WANGP_KREA_RAW_MEMORY_MB`, `WANGP_KREA_RAW_MAX_CONTAINERS` and
+`WANGP_KREA_RAW_SCALEDOWN_WINDOW`. See [RAW snapshot details](wangpt-krea-raw-modal-app/README.md).
+
+## Krea2 RAW Edit L40S snapshot worker
+
+`wangpt-krea-raw-edit-modal-app/app.py` deploys `WanGPKreaRawEditWorker` in
+`wangpt-krea-raw-edit-modal-app`, accepting only `krea2_raw_edit`. It uses L40S,
+profile 1, 64 GiB host RAM, zero minimum containers, one maximum container and
+a 300-second idle timeout, with shared runtime, Volume, jobs and S3 handling.
+
+Private warmup edits a synthetic reference at 1024x1024, 20 steps, guidance 2
+and flow shift 5. It verifies the preset Identity Edit v1.2 LoRA during inference.
+Capture retains the transformer on CUDA and text/vision encoders and VAE on CPU.
+Native cleanup unloads task adapters; each request activates them normally.
+
+```bash
+.venv/bin/python -m modal deploy -m wangpt-krea-raw-edit-modal-app.app
+.venv/bin/python -m modal run control.py::krea_raw_edit_snapshot_probe
+WANGP_KREA_RAW_EDIT_SNAPSHOT=1 .venv/bin/python -m modal run control.py::submit \
+  --model krea2_raw_edit --kind image \
+  --params-file wangpt-krea-raw-edit-modal-app/examples/krea2_raw_edit.json
+```
+
+Replace the example's reference with an existing `/data` path or S3 URI in the
+configured bucket. Deployment settings use `WANGP_KREA_RAW_EDIT_MEMORY_MB`,
+`WANGP_KREA_RAW_EDIT_MAX_CONTAINERS` and `WANGP_KREA_RAW_EDIT_SCALEDOWN_WINDOW`.
+See [RAW Edit snapshot details](wangpt-krea-raw-edit-modal-app/README.md).
 
 ## Krea2 Turbo Edit L40S snapshot worker
 
-`krea_edit_app.py` deploys `WanGPKreaEditWorker` in the independent Modal app
+`wangpt-krea-edit-modal-app/app.py` deploys `WanGPKreaEditWorker` in the independent Modal app
 `wangpt-krea-edit-modal-app`. It accepts only `krea2_turbo_edit`, uses L40S with
 profile 1 and 64 GiB host RAM, and shares the runtime, job store, Volume and S3
 handling. It scales to zero after 300 idle seconds, with at most one container.
@@ -347,21 +424,21 @@ on CUDA and the text encoder, vision encoder and VAE on CPU. Native cleanup
 unloads task LoRAs; each request loads the preset adapter normally.
 
 ```bash
-.venv/bin/python -m modal deploy krea_edit_app.py
+.venv/bin/python -m modal deploy -m wangpt-krea-edit-modal-app.app
 .venv/bin/python -m modal run control.py::krea_edit_snapshot_probe
 WANGP_KREA_EDIT_SNAPSHOT=1 .venv/bin/python -m modal run control.py::submit \
-  --model krea2_turbo_edit --kind image --params-file examples/krea2_turbo_edit.json
+  --model krea2_turbo_edit --kind image --params-file wangpt-krea-edit-modal-app/examples/krea2_turbo_edit.json
 ```
 
 Replace the example's reference path with an existing `/data` image or an S3
 URI in the configured bucket. The edit route has its own opt-in flag; plain
 Turbo routing still uses `WANGP_KREA_SNAPSHOT`. Memory, container limit and idle
 timeout use `WANGP_KREA_EDIT_MEMORY_MB`, `WANGP_KREA_EDIT_MAX_CONTAINERS` and
-`WANGP_KREA_EDIT_SCALEDOWN_WINDOW`. See [edit snapshot details](docs/krea-edit-snapshot.md).
+`WANGP_KREA_EDIT_SCALEDOWN_WINDOW`. See [edit snapshot details](wangpt-krea-edit-modal-app/README.md).
 
 ## Qwen Image 2.1 7B L40S snapshot worker
 
-`qwen_image_21_app.py` deploys `WanGPQwenImage21Worker` in the independent Modal
+`wangpt-qwen-image-21-modal-app/app.py` deploys `WanGPQwenImage21Worker` in the independent Modal
 app `wangpt-qwen-image-21-modal-app`. It accepts only `qwen_image_21_7B` and uses
 the shared runtime, job store, Volume and S3 handling. The worker uses L40S,
 profile 1, 64 GiB host RAM, zero minimum containers, one maximum container and
@@ -373,20 +450,20 @@ vision encoder and VAE on CPU, without active task LoRAs. Both text-to-image
 and image editing use the same `run(job_id, model, params)` method.
 
 ```bash
-.venv/bin/python -m modal deploy qwen_image_21_app.py
+.venv/bin/python -m modal deploy -m wangpt-qwen-image-21-modal-app.app
 .venv/bin/python -m modal run control.py::qwen_image_21_snapshot_probe
 WANGP_QWEN_IMAGE_21_SNAPSHOT=1 .venv/bin/python -m modal run control.py::submit \
-  --model qwen_image_21_7B --kind image --params-file examples/qwen_image_21_7B.json
+  --model qwen_image_21_7B --kind image --params-file wangpt-qwen-image-21-modal-app/examples/qwen_image_21_7B.json
 ```
 
 The client flag affects only this exact image model. Memory, container limit
 and idle timeout use `WANGP_QWEN_IMAGE_21_MEMORY_MB`,
 `WANGP_QWEN_IMAGE_21_MAX_CONTAINERS` and `WANGP_QWEN_IMAGE_21_SCALEDOWN_WINDOW`.
-See [Qwen snapshot details](docs/qwen-image-21-snapshot.md).
+See [Qwen snapshot details](wangpt-qwen-image-21-modal-app/README.md).
 
 ## Qwen Noct Q V4 L40S snapshot worker
 
-`qwen_noctq_app.py` deploys `WanGPQwenNoctQWorker` in the independent app
+`wangpt-qwen-noctq-modal-app/app.py` deploys `WanGPQwenNoctQWorker` in the independent app
 `wangpt-qwen-noctq-modal-app`, accepting only `qwen_image_21_noctq_v4`. It uses
 L40S, profile 1, 64 GiB host RAM, zero minimum containers, one maximum container
 and a 300-second idle timeout, with the shared runtime, Volume, jobs and S3.
@@ -396,16 +473,16 @@ Private warmup edits a synthetic reference at 1024x1024, 25 steps and guidance
 and the text encoder, vision encoder and VAE on CPU, with no active task LoRAs.
 
 ```bash
-.venv/bin/python -m modal deploy qwen_noctq_app.py
+.venv/bin/python -m modal deploy -m wangpt-qwen-noctq-modal-app.app
 .venv/bin/python -m modal run control.py::qwen_noctq_snapshot_probe
 WANGP_QWEN_NOCTQ_SNAPSHOT=1 .venv/bin/python -m modal run control.py::submit \
   --model qwen_image_21_noctq_v4 --kind image \
-  --params-file examples/qwen_image_21_noctq_v4.json
+  --params-file wangpt-qwen-noctq-modal-app/examples/qwen_image_21_noctq_v4.json
 ```
 
 The flag affects only this exact image model. Deployment settings use
 `WANGP_QWEN_NOCTQ_MEMORY_MB`, `WANGP_QWEN_NOCTQ_MAX_CONTAINERS` and
-`WANGP_QWEN_NOCTQ_SCALEDOWN_WINDOW`. See [Noct Q snapshot details](docs/qwen-noctq-snapshot.md).
+`WANGP_QWEN_NOCTQ_SCALEDOWN_WINDOW`. See [Noct Q snapshot details](wangpt-qwen-noctq-modal-app/README.md).
 
 ## Singularity GPU snapshot experiment
 
@@ -529,14 +606,14 @@ The JSON string can contain every native Krea2 parameter:
 ```
 
 Krea2 Turbo also has a dedicated [parameter reference](docs/krea2-turbo.md) and
-a checked-in [JSON example](examples/krea2_turbo.json). File-based submission
+a checked-in [JSON example](wangpt-krea-modal-app/examples/krea2_turbo.json). File-based submission
 remains available through the generic entrypoint when useful:
 
 ```bash
 python3 -m modal run control.py::submit \
   --model krea2_turbo \
   --kind image \
-  --params-file examples/krea2_turbo.json
+  --params-file wangpt-krea-modal-app/examples/krea2_turbo.json
 ```
 
 The reference documents the minimal request, the recommended 8-step baseline,
@@ -605,7 +682,7 @@ After deploying `app.py` and running `control.py::refresh_catalog`:
 ```bash
 python3 -m modal run control.py::submit \
   --model qwen_image_21_noctq_v4 --kind image \
-  --params-file examples/qwen_image_21_noctq_v4.json
+  --params-file wangpt-qwen-noctq-modal-app/examples/qwen_image_21_noctq_v4.json
 ```
 
 GPU verification on 2026-10-04 (Europe/Oslo): job

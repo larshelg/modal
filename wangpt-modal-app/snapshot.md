@@ -514,7 +514,9 @@ fingerprints and explain the cache decisions. No support message was sent.
   capture/boot diagnostics, request timing, and model-reuse checks.
 - `h3_snapshot.py`: private reference-conditioned 4-step warmup through the
   native session, accelerator validation, joined job thread, task/output cleanup,
-  memory diagnostics, and fresh RNG state after restoration.
+  and H3 transformer residency checks.
+- `snapshot_common.py`: shared memory diagnostics, snapshot logging, model-load
+  tracking, LoRA inspection, reference creation, and fresh RNG state after restoration.
 - `control.py`: exact-model opt-in using `WANGP_SINGULARITY_SNAPSHOT=1`, recorded
   worker selection, and `snapshot_probe` to initialize/inspect the dedicated pool.
 - Focused local tests cover routing isolation, dispatch errors, model rejection,

@@ -647,7 +647,7 @@ def test_h3_lora_alias_selects_minimax_h3_directory():
 
 
 def test_krea2_turbo_example_has_documented_baseline():
-    params = load_params_file("examples/krea2_turbo.json")
+    params = load_params_file("wangpt-krea-modal-app/examples/krea2_turbo.json")
     assert params["resolution"] == "1024x1024"
     assert params["num_inference_steps"] == 8
     assert params["guidance_scale"] == 0

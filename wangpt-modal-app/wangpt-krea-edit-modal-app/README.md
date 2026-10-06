@@ -1,10 +1,13 @@
 # Krea2 Turbo Edit snapshot worker
 
+Run all commands below from the `wangpt-modal-app` workspace root. Use Modal
+module mode (`-m wangpt-krea-edit-modal-app.app`) for this package.
+
 Dedicated app: `wangpt-krea-edit-modal-app`; class: `WanGPKreaEditWorker`.
 Model: `krea2_turbo_edit`; GPU: L40S; profile: 1; host RAM: 65536 MiB.
 Revision: `krea2-turbo-edit-l40s-transformer-v1`.
 
-Deploy `krea_edit_app.py` independently. Warmup runs a private eight-step
+Deploy `wangpt-krea-edit-modal-app/app.py` independently. Warmup runs a private eight-step
 1024x1024 edit of a synthetic reference with `video_prompt_type: "KI"`.
 It verifies that `krea2_identity_edit_v1_2.safetensors` is active during
 inference and joins the native generation thread before clearing input/output
@@ -24,10 +27,10 @@ The checked-in example requires an existing reference path; `/data` paths and
 S3 URIs in the configured bucket are supported.
 
 ```bash
-.venv/bin/python -m modal deploy krea_edit_app.py
+.venv/bin/python -m modal deploy -m wangpt-krea-edit-modal-app.app
 .venv/bin/python -m modal run control.py::krea_edit_snapshot_probe
 WANGP_KREA_EDIT_SNAPSHOT=1 .venv/bin/python -m modal run control.py::submit \
-  --model krea2_turbo_edit --kind image --params-file examples/krea2_turbo_edit.json
+  --model krea2_turbo_edit --kind image --params-file wangpt-krea-edit-modal-app/examples/krea2_turbo_edit.json
 .venv/bin/python -m modal run control.py::status --job-id JOB_ID
 ```
 
@@ -43,6 +46,10 @@ Keep job-record creation and polling in the caller. The worker rejects other
 models. Reference order, inpainting, outpainting and user LoRA behavior remain
 native WanGP behavior. Different configs, profiles or upscalers may cause normal
 model reconfiguration; the snapshot baseline is the default edit preset.
+
+Shared lifecycle and diagnostic helpers are in `snapshot_common.py` at the
+workspace root and included in this worker image. Model-specific warmup and
+residency checks are in this folder's `snapshot.py`.
 
 ## Validation
 

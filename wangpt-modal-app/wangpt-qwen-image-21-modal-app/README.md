@@ -1,10 +1,13 @@
 # Qwen Image 2.1 7B snapshot worker
 
+Run all commands below from the `wangpt-modal-app` workspace root. Use Modal
+module mode (`-m wangpt-qwen-image-21-modal-app.app`) for this package.
+
 Dedicated app: `wangpt-qwen-image-21-modal-app`; class: `WanGPQwenImage21Worker`.
 Model: `qwen_image_21_7B`; GPU: L40S; profile: 1; host RAM: 65536 MiB.
 Revision: `qwen-image-21-7b-l40s-transformer-v1`.
 
-Deploy `qwen_image_21_app.py` independently. Warmup runs a private 40-step
+Deploy `wangpt-qwen-image-21-modal-app/app.py` independently. Warmup runs a private 40-step
 832x480 edit of a synthetic reference with `video_prompt_type: "KI"`, guidance
 4, flow shift 5 and the default FlowMatch Euler solver. The base model uses no
 preset acceleration adapter. KV cache and RGBA are disabled for the baseline.
@@ -23,10 +26,10 @@ CLI submissions use this deployment when `WANGP_QWEN_IMAGE_21_SNAPSHOT=1` and
 the exact image model is `qwen_image_21_7B`:
 
 ```bash
-.venv/bin/python -m modal deploy qwen_image_21_app.py
+.venv/bin/python -m modal deploy -m wangpt-qwen-image-21-modal-app.app
 .venv/bin/python -m modal run control.py::qwen_image_21_snapshot_probe
 WANGP_QWEN_IMAGE_21_SNAPSHOT=1 .venv/bin/python -m modal run control.py::submit \
-  --model qwen_image_21_7B --kind image --params-file examples/qwen_image_21_7B.json
+  --model qwen_image_21_7B --kind image --params-file wangpt-qwen-image-21-modal-app/examples/qwen_image_21_7B.json
 .venv/bin/python -m modal run control.py::status --job-id JOB_ID
 ```
 
@@ -45,6 +48,10 @@ const call = await worker.method("run").spawn([jobId, "qwen_image_21_7B", params
 Keep job-record creation and polling in the caller. The worker rejects other
 models and finetunes. Changing config, profile or upscalers can trigger normal
 model reconfiguration; the snapshot baseline uses the default model config.
+
+Shared lifecycle and diagnostic helpers are in `snapshot_common.py` at the
+workspace root and included in this worker image. Model-specific warmup and
+residency checks are in this folder's `snapshot.py`.
 
 ## Validation
 

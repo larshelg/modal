@@ -1,10 +1,13 @@
 # Qwen Noct Q V4 snapshot worker
 
+Run all commands below from the `wangpt-modal-app` workspace root. Use Modal
+module mode (`-m wangpt-qwen-noctq-modal-app.app`) for this package.
+
 Dedicated app: `wangpt-qwen-noctq-modal-app`; class: `WanGPQwenNoctQWorker`.
 Model: `qwen_image_21_noctq_v4`; GPU: L40S; profile: 1; host RAM: 65536 MiB.
 Revision: `qwen-noctq-v4-l40s-transformer-v1`.
 
-The independent `qwen_noctq_app.py` deployment shares the WanGP runtime, Volume,
+The independent `wangpt-qwen-noctq-modal-app/app.py` deployment shares the WanGP runtime, Volume,
 job store and verified S3 output handling. It uses the existing Noct Q V4
 INT8 ConvRot checkpoint pinned to revision
 `a81b9af51120a78e285e57906f2250a2a02080e9` in
@@ -25,11 +28,11 @@ Both text generation and reference-image editing use
 `run(job_id, model, params)`. CLI routing is opt-in for this exact image model:
 
 ```bash
-.venv/bin/python -m modal deploy qwen_noctq_app.py
+.venv/bin/python -m modal deploy -m wangpt-qwen-noctq-modal-app.app
 .venv/bin/python -m modal run control.py::qwen_noctq_snapshot_probe
 WANGP_QWEN_NOCTQ_SNAPSHOT=1 .venv/bin/python -m modal run control.py::submit \
   --model qwen_image_21_noctq_v4 --kind image \
-  --params-file examples/qwen_image_21_noctq_v4.json
+  --params-file wangpt-qwen-noctq-modal-app/examples/qwen_image_21_noctq_v4.json
 .venv/bin/python -m modal run control.py::status --job-id JOB_ID
 ```
 
@@ -48,6 +51,10 @@ const call = await worker.method("run").spawn([jobId, "qwen_image_21_noctq_v4", 
 Keep job-record creation and polling in the caller. Other models are rejected.
 Different configs, profiles or upscalers can trigger normal reconfiguration;
 snapshot reuse is scoped to the default finetune config.
+
+Shared lifecycle and diagnostic helpers are in `snapshot_common.py` at the
+workspace root and included in this worker image. Model-specific warmup and
+residency checks are in this folder's `snapshot.py`.
 
 ## Validation
 

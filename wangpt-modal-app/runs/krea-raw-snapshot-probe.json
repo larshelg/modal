@@ -1,0 +1,138 @@
+{
+  "boot_id": "df7d6910-40b5-47ab-ba92-b2ecfa8c2e9c",
+  "capture_id": "dcb8a61d-a3ab-48c1-b2f9-69c5f391b5eb",
+  "capture_memory": {
+    "component_logical_elements_by_device": {
+      "text_encoder": {
+        "cpu": 4022468664
+      },
+      "transformer": {
+        "cuda:0": 12820073484
+      },
+      "vae": {
+        "cpu": 126892531
+      }
+    },
+    "cpu_rss_bytes": 29439422464,
+    "cuda_allocated_bytes": 13501396992,
+    "cuda_peak_allocated_bytes": 13949399552,
+    "cuda_reserved_bytes": 13602127872,
+    "gpu_free_bytes": 33460256768,
+    "gpu_name": "NVIDIA L40S",
+    "gpu_total_bytes": 47695921152,
+    "mmgp_active_models": [
+      "transformer"
+    ]
+  },
+  "current_memory": {
+    "component_logical_elements_by_device": {
+      "text_encoder": {
+        "cpu": 4022468664
+      },
+      "transformer": {
+        "cuda:0": 12820073484
+      },
+      "vae": {
+        "cpu": 126892531
+      }
+    },
+    "cpu_rss_bytes": 25441595392,
+    "cuda_allocated_bytes": 13501396992,
+    "cuda_peak_allocated_bytes": 13949399552,
+    "cuda_reserved_bytes": 13602127872,
+    "gpu_free_bytes": 33460256768,
+    "gpu_name": "NVIDIA L40S",
+    "gpu_total_bytes": 47695921152,
+    "mmgp_active_models": [
+      "transformer"
+    ]
+  },
+  "last_request": null,
+  "loaded": {
+    "active_loras": [],
+    "config": "",
+    "model": "krea2_raw",
+    "profile": 1.0
+  },
+  "requests_served": 0,
+  "restore_memory": {
+    "component_logical_elements_by_device": {
+      "text_encoder": {
+        "cpu": 4022468664
+      },
+      "transformer": {
+        "cuda:0": 12820073484
+      },
+      "vae": {
+        "cpu": 126892531
+      }
+    },
+    "cpu_rss_bytes": 25440890880,
+    "cuda_allocated_bytes": 13501396992,
+    "cuda_peak_allocated_bytes": 13949399552,
+    "cuda_reserved_bytes": 13602127872,
+    "gpu_free_bytes": 33460256768,
+    "gpu_name": "NVIDIA L40S",
+    "gpu_total_bytes": 47695921152,
+    "mmgp_active_models": [
+      "transformer"
+    ]
+  },
+  "revision": "krea2-raw-l40s-transformer-v1",
+  "transformer_residency": {
+    "after": {
+      "component_logical_elements_by_device": {
+        "text_encoder": {
+          "cpu": 4022468664
+        },
+        "transformer": {
+          "cuda:0": 12820073484
+        },
+        "vae": {
+          "cpu": 126892531
+        }
+      },
+      "cpu_rss_bytes": 29439422464,
+      "cuda_allocated_bytes": 13501396992,
+      "cuda_peak_allocated_bytes": 13949399552,
+      "cuda_reserved_bytes": 13602127872,
+      "gpu_free_bytes": 33460256768,
+      "gpu_name": "NVIDIA L40S",
+      "gpu_total_bytes": 47695921152,
+      "mmgp_active_models": [
+        "transformer"
+      ]
+    },
+    "before": {
+      "component_logical_elements_by_device": {
+        "text_encoder": {
+          "cpu": 4022468664
+        },
+        "transformer": {
+          "cpu": 12820073484
+        },
+        "vae": {
+          "cpu": 126892531
+        }
+      },
+      "cpu_rss_bytes": 29439422464,
+      "cuda_allocated_bytes": 9568256,
+      "cuda_peak_allocated_bytes": 13949399552,
+      "cuda_reserved_bytes": 23068672,
+      "gpu_free_bytes": 47039315968,
+      "gpu_name": "NVIDIA L40S",
+      "gpu_total_bytes": 47695921152,
+      "mmgp_active_models": []
+    },
+    "cuda_delta_bytes": 13491828736,
+    "seconds": 1.022
+  },
+  "warmup": {
+    "active_loras": [],
+    "config": "",
+    "initialize_seconds": 227.573,
+    "model": "krea2_raw",
+    "profile": 1.0,
+    "warmup_seconds": 120.802
+  }
+}

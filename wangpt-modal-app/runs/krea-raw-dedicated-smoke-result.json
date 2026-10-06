@@ -1,0 +1,39 @@
+{
+  "call_id": "fc-01M48TW07VFX62JDD4688Y27C8",
+  "completed_at": "2026-10-06T14:53:43.750828+00:00",
+  "created_at": "2026-10-06T14:46:17.972083+00:00",
+  "id": "182c7b2c-6fdb-43b1-bd6a-6427da0e3cac",
+  "kind": "image",
+  "model": "krea2_raw",
+  "progress": {
+    "current_step": null,
+    "phase": "inference",
+    "progress": 15,
+    "status": "Saving File 2026-10-06-1...r, natural light, detailed fur..jpg",
+    "total_steps": null
+  },
+  "result": {
+    "errors": [],
+    "failed_tasks": 0,
+    "outputs": [
+      {
+        "bucket": "bucket-rlnfehwax8alyao51e",
+        "filename": "2026-10-06-14h53m41s_seed12345_A red fox walking through fresh snow at golden hour, natural light, detailed fur..jpg",
+        "key": "runninghub/wangp/182c7b2c-6fdb-43b1-bd6a-6427da0e3cac/000-2026-10-06-14h53m41s_seed12345_A red fox walking through fresh snow at golden hour, natural light, detailed fur..jpg",
+        "media_type": "image/jpeg",
+        "sha256": "1cf03ad9044687745c71e7d5ab9acf4e46285e28a1c16468605d690f59210b80",
+        "size_bytes": 268679,
+        "storage": "s3",
+        "uri": "s3://bucket-rlnfehwax8alyao51e/runninghub/wangp/182c7b2c-6fdb-43b1-bd6a-6427da0e3cac/000-2026-10-06-14h53m41s_seed12345_A red fox walking through fresh snow at golden hour, natural light, detailed fur..jpg"
+      }
+    ],
+    "success": true,
+    "successful_tasks": 1,
+    "total_tasks": 1
+  },
+  "started_at": "2026-10-06T14:52:07.925641+00:00",
+  "status": "succeeded",
+  "updated_at": "2026-10-06T14:53:43.750867+00:00",
+  "worker": "WanGPKreaRawWorker",
+  "worker_app": "wangpt-krea-raw-modal-app"
+}

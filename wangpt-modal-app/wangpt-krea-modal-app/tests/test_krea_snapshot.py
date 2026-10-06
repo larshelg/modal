@@ -1,4 +1,5 @@
 import copy
+from importlib import import_module
 import sys
 import threading
 from pathlib import Path
@@ -7,8 +8,8 @@ from types import SimpleNamespace
 import pytest
 
 import control
-import krea_app
-import krea_snapshot as snapshot
+krea_app = import_module("wangpt-krea-modal-app.app")
+snapshot = import_module("wangpt-krea-modal-app.snapshot")
 
 
 def resident_report():

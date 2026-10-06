@@ -28,6 +28,10 @@ from wangpt_common import (
 DATA_VOLUME_NAME = "wangp-data"
 KREA_MODEL = "krea2_turbo"
 KREA_WORKER_APP_NAME = "wangpt-krea-modal-app"
+KREA_RAW_MODEL = "krea2_raw"
+KREA_RAW_WORKER_APP_NAME = "wangpt-krea-raw-modal-app"
+KREA_RAW_EDIT_MODEL = "krea2_raw_edit"
+KREA_RAW_EDIT_WORKER_APP_NAME = "wangpt-krea-raw-edit-modal-app"
 KREA_EDIT_MODEL = "krea2_turbo_edit"
 KREA_EDIT_WORKER_APP_NAME = "wangpt-krea-edit-modal-app"
 QWEN_IMAGE_21_MODEL = "qwen_image_21_7B"
@@ -227,6 +231,10 @@ def load_deployed_catalog() -> dict[str, Any]:
 
 def generation_worker_name(kind: str, model: str = "") -> str:
     """Map catalog output kinds onto deployed GPU worker classes."""
+    if kind == "image" and model == KREA_RAW_EDIT_MODEL and os.environ.get("WANGP_KREA_RAW_EDIT_SNAPSHOT", "0") == "1":
+        return "WanGPKreaRawEditWorker"
+    if kind == "image" and model == KREA_RAW_MODEL and os.environ.get("WANGP_KREA_RAW_SNAPSHOT", "0") == "1":
+        return "WanGPKreaRawWorker"
     if kind == "image" and model == QWEN_NOCTQ_MODEL and os.environ.get("WANGP_QWEN_NOCTQ_SNAPSHOT", "0") == "1":
         return "WanGPQwenNoctQWorker"
     if kind == "image" and model == QWEN_IMAGE_21_MODEL and os.environ.get("WANGP_QWEN_IMAGE_21_SNAPSHOT", "0") == "1":
@@ -317,6 +325,8 @@ def submit_generation(
     worker_name = generation_worker_name(resolved_kind, model)
     worker_app = {
         "WanGPKreaWorker": KREA_WORKER_APP_NAME,
+        "WanGPKreaRawWorker": KREA_RAW_WORKER_APP_NAME,
+        "WanGPKreaRawEditWorker": KREA_RAW_EDIT_WORKER_APP_NAME,
         "WanGPKreaEditWorker": KREA_EDIT_WORKER_APP_NAME,
         "WanGPQwenImage21Worker": QWEN_IMAGE_21_WORKER_APP_NAME,
         "WanGPQwenNoctQWorker": QWEN_NOCTQ_WORKER_APP_NAME,
@@ -603,6 +613,20 @@ def snapshot_probe() -> None:
 def krea_snapshot_probe() -> None:
     """Probe the dedicated deployed L40S Krea snapshot pool."""
     worker = modal.Cls.from_name(KREA_WORKER_APP_NAME, "WanGPKreaWorker")
+    print_json(worker().snapshot_info.remote())
+
+
+@app.local_entrypoint()
+def krea_raw_snapshot_probe() -> None:
+    """Probe the dedicated deployed L40S Krea RAW snapshot pool."""
+    worker = modal.Cls.from_name(KREA_RAW_WORKER_APP_NAME, "WanGPKreaRawWorker")
+    print_json(worker().snapshot_info.remote())
+
+
+@app.local_entrypoint()
+def krea_raw_edit_snapshot_probe() -> None:
+    """Probe the dedicated deployed L40S Krea RAW Edit snapshot pool."""
+    worker = modal.Cls.from_name(KREA_RAW_EDIT_WORKER_APP_NAME, "WanGPKreaRawEditWorker")
     print_json(worker().snapshot_info.remote())
 
 

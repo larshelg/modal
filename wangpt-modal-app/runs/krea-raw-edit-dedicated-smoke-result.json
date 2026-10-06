@@ -1,0 +1,39 @@
+{
+  "call_id": "fc-01M48VSRG6ZM1XFW896QV1BAQ1",
+  "completed_at": "2026-10-06T15:05:42.457439+00:00",
+  "created_at": "2026-10-06T15:02:33.104844+00:00",
+  "id": "3d0f271e-d2fe-49c3-9478-683d6e34ff7b",
+  "kind": "image",
+  "model": "krea2_raw_edit",
+  "progress": {
+    "current_step": null,
+    "phase": "inference",
+    "progress": 15,
+    "status": "Saving File 2026-10-06-1...ourtyard, camera angle, pots, b.jpg",
+    "total_steps": null
+  },
+  "result": {
+    "errors": [],
+    "failed_tasks": 0,
+    "outputs": [
+      {
+        "bucket": "bucket-rlnfehwax8alyao51e",
+        "filename": "2026-10-06-15h05m41s_seed12345_Change the cobalt blue arched door in image 1 to deep red; keep the courtyard, camera angle, pots, b.jpg",
+        "key": "runninghub/wangp/3d0f271e-d2fe-49c3-9478-683d6e34ff7b/000-2026-10-06-15h05m41s_seed12345_Change the cobalt blue arched door in image 1 to deep red; keep the courtyard, camera angle, pots, b.jpg",
+        "media_type": "image/jpeg",
+        "sha256": "cb473a1e1da23b17534825e4604479267c3b562f55dbb6e804888e2ae1d696e6",
+        "size_bytes": 143491,
+        "storage": "s3",
+        "uri": "s3://bucket-rlnfehwax8alyao51e/runninghub/wangp/3d0f271e-d2fe-49c3-9478-683d6e34ff7b/000-2026-10-06-15h05m41s_seed12345_Change the cobalt blue arched door in image 1 to deep red; keep the courtyard, camera angle, pots, b.jpg"
+      }
+    ],
+    "success": true,
+    "successful_tasks": 1,
+    "total_tasks": 1
+  },
+  "started_at": "2026-10-06T15:04:49.642630+00:00",
+  "status": "succeeded",
+  "updated_at": "2026-10-06T15:05:42.457445+00:00",
+  "worker": "WanGPKreaRawEditWorker",
+  "worker_app": "wangpt-krea-raw-edit-modal-app"
+}

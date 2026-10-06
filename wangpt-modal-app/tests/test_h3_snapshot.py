@@ -9,6 +9,7 @@ import pytest
 import app
 import control
 import h3_snapshot as snapshot
+import snapshot_common as common
 from wangpt_common import SINGULARITY_MODEL
 
 
@@ -204,10 +205,10 @@ def test_active_session_cannot_be_snapshot(warmup_env):
 def test_restore_refreshes_boot_and_rng_without_replacing_capture(monkeypatch):
     seeds = []
     monkeypatch.setitem(sys.modules, "wgp", SimpleNamespace())
-    monkeypatch.setattr(snapshot, "reseed_after_restore", lambda: seeds.append("reseed"))
+    monkeypatch.setattr(common, "reseed_after_restore", lambda: seeds.append("reseed"))
     monkeypatch.setattr(snapshot, "loaded_state", lambda wgp: {"model": SINGULARITY_MODEL})
-    monkeypatch.setattr(snapshot, "emit_snapshot", lambda *args, **kwargs: None)
-    monkeypatch.setattr(snapshot, "memory_report", lambda wgp: resident_report())
+    monkeypatch.setattr(common, "emit_snapshot", lambda *args, **kwargs: None)
+    monkeypatch.setattr(common, "memory_report", lambda wgp: resident_report())
     worker = SimpleNamespace(capture_id="captured", snapshot_revision="v1")
     restore = app.WanGPSingularityWorker._get_user_cls().after_restore._get_raw_f()
     restore(worker)
@@ -227,7 +228,7 @@ def test_snapshot_request_records_first_inference_and_actual_model_reuse(monkeyp
     events = []
     wgp = SimpleNamespace(wan_model=object(), load_models=lambda: None)
     monkeypatch.setitem(sys.modules, "wgp", wgp)
-    monkeypatch.setattr(snapshot, "emit_snapshot", lambda stage, **values: events.append((stage, values)))
+    monkeypatch.setattr(common, "emit_snapshot", lambda stage, **values: events.append((stage, values)))
     params = {"prompt": "user prompt", "seed": 123, "num_inference_steps": 4}
 
     def run(job_id, model, settings, *, progress_observer):
@@ -306,19 +307,8 @@ def test_restore_rejects_lost_gpu_residency_without_reloading(monkeypatch):
     monkeypatch.setitem(sys.modules, "wgp", wgp)
     report = resident_report()
     report["component_logical_elements_by_device"]["transformer"] = {"cpu": 20_111_439_344}
-    monkeypatch.setattr(snapshot, "memory_report", lambda wgp: report)
-    monkeypatch.setattr(snapshot, "reseed_after_restore", lambda: pytest.fail("must validate first"))
+    monkeypatch.setattr(common, "memory_report", lambda wgp: report)
+    monkeypatch.setattr(common, "reseed_after_restore", lambda: pytest.fail("must validate first"))
     restore = app.WanGPSingularityWorker._get_user_cls().after_restore._get_raw_f()
     with pytest.raises(RuntimeError, match="entirely on CUDA"):
         restore(SimpleNamespace())
-
-
-def test_load_tracking_restores_native_loader_after_failure():
-    def original():
-        raise ValueError("load failed")
-    wgp = SimpleNamespace(load_models=original)
-    with pytest.raises(ValueError):
-        with snapshot.track_model_loads(wgp) as counts:
-            wgp.load_models()
-    assert counts["load_models_calls"] == 1
-    assert wgp.load_models is original

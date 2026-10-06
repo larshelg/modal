@@ -1,5 +1,8 @@
 # Krea2 Turbo snapshot worker
 
+Run all commands below from the `wangpt-modal-app` workspace root. Use Modal
+module mode (`-m wangpt-krea-modal-app.app`) for this package.
+
 Dedicated app: `wangpt-krea-modal-app`; class: `WanGPKreaWorker`.
 Model: `krea2_turbo`; GPU: L40S; profile: 1; host RAM: 65536 MiB.
 Revision: `krea2-turbo-l40s-transformer-v1`.
@@ -16,7 +19,7 @@ diagnostics count native `wgp.load_models` calls and compare pipeline identity.
 Cold cache reuse requires an existing capture ID in a new boot after scale-down;
 Modal's immediate restore of a newly created snapshot does not establish reuse.
 
-Deploy only `krea_app.py` for this worker. The original app and H3 snapshot
+Deploy only `wangpt-krea-modal-app/app.py` for this worker. The original app and H3 snapshot
 sources are unchanged. CLI routing requires `WANGP_KREA_SNAPSHOT=1`; direct
 TypeScript clients select the separate app/class explicitly:
 
@@ -30,6 +33,10 @@ Keep existing job-record creation and polling in the caller. The edit preset
 and all non-Krea models are rejected by this worker. Different model configs,
 profile overrides, or upscalers may require normal native reconfiguration;
 snapshot reuse is validated for the default preset, not every possible setting.
+
+Shared lifecycle and diagnostic helpers are in `snapshot_common.py` at the
+workspace root and included in this worker image. Model-specific warmup and
+residency checks are in this folder's `snapshot.py`.
 
 ## Validation
 
@@ -62,7 +69,7 @@ Real generation on that same restored boot:
 
 - Job `6705fcc0-3e21-4d4d-995c-1133d873a990`.
 - [Submission](https://modal.com/apps/larshelg/main/ap-JTkNMOXQZcarhmE4g3t7tB).
-- Standard `examples/krea2_turbo.json`: fox walking through fresh snow at golden
+- Standard `wangpt-krea-modal-app/examples/krea2_turbo.json`: fox walking through fresh snow at golden
   hour; 1024x1024, eight steps, guidance 0, flow shift 5, seed 12345.
 - Terminal status `succeeded`, one successful task, no errors.
 - Worker elapsed `14.740` seconds; `load_models_calls=0`, `model_reused=true`.

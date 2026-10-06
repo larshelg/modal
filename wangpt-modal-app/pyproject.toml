@@ -15,4 +15,13 @@ dev = [
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
-testpaths = ["tests", "sol_refiner/tests"]
+testpaths = [
+    "tests",
+    "sol_refiner/tests",
+    "wangpt-krea-modal-app/tests",
+    "wangpt-krea-raw-modal-app/tests",
+    "wangpt-krea-raw-edit-modal-app/tests",
+    "wangpt-krea-edit-modal-app/tests",
+    "wangpt-qwen-image-21-modal-app/tests",
+    "wangpt-qwen-noctq-modal-app/tests",
+]

@@ -232,7 +232,7 @@ gpu_image = (
 image_worker_image = gpu_image.env({"WANGP_WORKER_KIND": "image"})
 video_worker_image = gpu_image.env({"WANGP_WORKER_KIND": "video"})
 # Keep the snapshot helper/image layer exclusive to this experimental pool.
-singularity_worker_image = gpu_image.add_local_python_source("h3_snapshot", copy=True).env(
+singularity_worker_image = gpu_image.add_local_python_source("h3_snapshot", "snapshot_common", copy=True).env(
     {"WANGP_WORKER_KIND": "singularity-snapshot"}
 )
 
@@ -817,9 +817,10 @@ class WanGPSingularityWorker:
     @modal.enter(snap=True)
     def prepare_snapshot(self) -> None:
         from h3_snapshot import (
-            SNAPSHOT_REVISION, emit_snapshot, make_transformer_resident,
-            memory_report, validate_transformer_residency, warm_session,
+            SNAPSHOT_REVISION, make_transformer_resident,
+            validate_transformer_residency, warm_session,
         )
+        from snapshot_common import emit_snapshot, memory_report
 
         started = time.monotonic()
         if float(SINGULARITY_PROFILE) != 1:
@@ -840,10 +841,8 @@ class WanGPSingularityWorker:
 
     @modal.enter(snap=False)
     def after_restore(self) -> None:
-        from h3_snapshot import (
-            emit_snapshot, loaded_state, memory_report, reseed_after_restore,
-            validate_transformer_residency,
-        )
+        from h3_snapshot import loaded_state, validate_transformer_residency
+        from snapshot_common import emit_snapshot, memory_report, reseed_after_restore
 
         # Observe restored memory before any placement, warmup, or generation.
         self.restore_memory = memory_report(sys.modules["wgp"])
@@ -862,7 +861,8 @@ class WanGPSingularityWorker:
     @modal.method()
     def snapshot_info(self) -> dict[str, Any]:
         """Calling this initializes the GPU worker, including warmup if needed."""
-        from h3_snapshot import loaded_state, memory_report
+        from h3_snapshot import loaded_state
+        from snapshot_common import memory_report
 
         return {
             "revision": self.snapshot_revision,
@@ -880,7 +880,8 @@ class WanGPSingularityWorker:
 
     @modal.method()
     def run(self, job_id: str, model: str, params: dict[str, Any]) -> dict[str, Any]:
-        from h3_snapshot import emit_snapshot, require_singularity, track_model_loads
+        from h3_snapshot import require_singularity
+        from snapshot_common import emit_snapshot, track_model_loads
 
         require_singularity(model)
         started = time.monotonic()
