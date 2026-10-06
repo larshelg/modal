@@ -1,0 +1,157 @@
+{
+  "boot_id": "22d47b5b-a779-4c07-9a60-e20b937a52e5",
+  "capture_id": "45ac3ed9-905e-4418-8b02-1ca65a4350c4",
+  "capture_memory": {
+    "component_logical_elements_by_device": {
+      "text_encoder": {
+        "cpu": 7568406136
+      },
+      "transformer": {
+        "cuda:0": 7115125248
+      },
+      "vae": {
+        "cpu": 337740404
+      },
+      "vision_encoder": {
+        "cpu": 576388588
+      }
+    },
+    "cpu_rss_bytes": 27646672896,
+    "cuda_allocated_bytes": 7263601664,
+    "cuda_peak_allocated_bytes": 8386562560,
+    "cuda_reserved_bytes": 7275020288,
+    "gpu_free_bytes": 39787364352,
+    "gpu_name": "NVIDIA L40S",
+    "gpu_total_bytes": 47695921152,
+    "mmgp_active_models": [
+      "transformer"
+    ]
+  },
+  "current_memory": {
+    "component_logical_elements_by_device": {
+      "text_encoder": {
+        "cpu": 7568406136
+      },
+      "transformer": {
+        "cuda:0": 7115125248
+      },
+      "vae": {
+        "cpu": 337740404
+      },
+      "vision_encoder": {
+        "cpu": 576388588
+      }
+    },
+    "cpu_rss_bytes": 23649431552,
+    "cuda_allocated_bytes": 7263601664,
+    "cuda_peak_allocated_bytes": 8386562560,
+    "cuda_reserved_bytes": 7275020288,
+    "gpu_free_bytes": 39787364352,
+    "gpu_name": "NVIDIA L40S",
+    "gpu_total_bytes": 47695921152,
+    "mmgp_active_models": [
+      "transformer"
+    ]
+  },
+  "last_request": null,
+  "loaded": {
+    "active_loras": [],
+    "checkpoint": "NoctQ_V4_int8_convrot.safetensors",
+    "checkpoint_revision": "a81b9af51120a78e285e57906f2250a2a02080e9",
+    "config": "",
+    "model": "qwen_image_21_noctq_v4",
+    "profile": 1.0
+  },
+  "requests_served": 0,
+  "restore_memory": {
+    "component_logical_elements_by_device": {
+      "text_encoder": {
+        "cpu": 7568406136
+      },
+      "transformer": {
+        "cuda:0": 7115125248
+      },
+      "vae": {
+        "cpu": 337740404
+      },
+      "vision_encoder": {
+        "cpu": 576388588
+      }
+    },
+    "cpu_rss_bytes": 23648727040,
+    "cuda_allocated_bytes": 7263601664,
+    "cuda_peak_allocated_bytes": 8386562560,
+    "cuda_reserved_bytes": 7275020288,
+    "gpu_free_bytes": 39787364352,
+    "gpu_name": "NVIDIA L40S",
+    "gpu_total_bytes": 47695921152,
+    "mmgp_active_models": [
+      "transformer"
+    ]
+  },
+  "revision": "qwen-noctq-v4-l40s-transformer-v1",
+  "transformer_residency": {
+    "after": {
+      "component_logical_elements_by_device": {
+        "text_encoder": {
+          "cpu": 7568406136
+        },
+        "transformer": {
+          "cuda:0": 7115125248
+        },
+        "vae": {
+          "cpu": 337740404
+        },
+        "vision_encoder": {
+          "cpu": 576388588
+        }
+      },
+      "cpu_rss_bytes": 27646672896,
+      "cuda_allocated_bytes": 7263601664,
+      "cuda_peak_allocated_bytes": 8386562560,
+      "cuda_reserved_bytes": 7275020288,
+      "gpu_free_bytes": 39787364352,
+      "gpu_name": "NVIDIA L40S",
+      "gpu_total_bytes": 47695921152,
+      "mmgp_active_models": [
+        "transformer"
+      ]
+    },
+    "before": {
+      "component_logical_elements_by_device": {
+        "text_encoder": {
+          "cpu": 7568406136
+        },
+        "transformer": {
+          "cpu": 7115125312
+        },
+        "vae": {
+          "cpu": 337740404
+        },
+        "vision_encoder": {
+          "cpu": 576388588
+        }
+      },
+      "cpu_rss_bytes": 27646672896,
+      "cuda_allocated_bytes": 9576960,
+      "cuda_peak_allocated_bytes": 8386562560,
+      "cuda_reserved_bytes": 25165824,
+      "gpu_free_bytes": 47037218816,
+      "gpu_name": "NVIDIA L40S",
+      "gpu_total_bytes": 47695921152,
+      "mmgp_active_models": []
+    },
+    "cuda_delta_bytes": 7254024704,
+    "seconds": 0.556
+  },
+  "warmup": {
+    "active_loras": [],
+    "checkpoint": "NoctQ_V4_int8_convrot.safetensors",
+    "checkpoint_revision": "a81b9af51120a78e285e57906f2250a2a02080e9",
+    "config": "",
+    "initialize_seconds": 205.755,
+    "model": "qwen_image_21_noctq_v4",
+    "profile": 1.0,
+    "warmup_seconds": 118.388
+  }
+}

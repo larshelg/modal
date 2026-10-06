@@ -61,6 +61,203 @@ for this revision's audio encoding helper. All 146 local tests pass with
 The `wangpt-modal-app` deployment and its 237-model catalog were updated to this
 revision on 2026-10-01. GPU generation has not yet been smoke-tested after this upgrade.
 
+## MiniMax H3 RefMods
+
+[MiniMaxH3Mod-for-WanGP](https://github.com/g3n3rativ3/MiniMaxH3Mod-for-WanGP)
+0.31.0 is installed in the worker image at pinned commit
+`bff0a8554ae4f6f916e38eaa0ef9a1af03fd437b`. `h3_refmod.py` activates its
+pipeline hooks and refreshes model definitions for headless API requests.
+The build checks that RefMod custom settings are present in the model catalog.
+No GUI plugin toggle is needed. Existing WanGP dependencies cover the plugin;
+its optional OpenCV backend is not installed separately.
+
+The plugin library uses `/data/refmods` on `wangp-data`, shared with Fizgig's
+completed RefMods. Select files by name without `.safetensors`, for example
+`linda_refmod_v1` or `characters/linda`. For a manually supplied file:
+
+```bash
+python3 -m modal volume put wangp-data ./linda_refmod_v1.safetensors /refmods/linda_refmod_v1.safetensors
+```
+
+Use an H3 **Ref2VA** model (including the Singularity Ref2VA finetune), and pass
+the plugin's native JSON string in `custom_settings.h3_refmod_state`:
+
+```bash
+python3 -m modal run control.py::submit \
+  --model minimax_h3_ref2va_singularity_pruned --kind video \
+  --params-file examples/h3-refmod.json
+```
+
+Edit the example's mod name to match an existing file. Its `rows` contain
+`mod`, `strength`, and optional `copies`; `retention` scales all strengths.
+These settings can coexist with the existing latent-continuation `plugin_data`.
+The plugin's Gradio Extract/Library/Generate tabs are not served by this app;
+use `fizgig-modal-app` to create RefMods with its tracked artifact workflow.
+After adding new Volume files, use a fresh worker container so it sees the
+latest Volume snapshot; warm workers do not reload open model files.
+
+Redeploy `app.py` and run `control.py::refresh_catalog` to activate this change.
+The independent `krea_app.py` deployment is unaffected until separately deployed.
+
+### Experimental numbered image and video RefMods
+
+Set `text_encode: true` inside the JSON string in
+`custom_settings.h3_refmod_state`. This app extension decodes each active visual
+RefMod through H3's loaded video VAE and presents the reconstructed media to
+the native text/vision encoder. The same strength/curve-adjusted latent is used
+for generation, without re-encoding the reconstructed pixels or applying the
+RefMod twice. Basic requests without this option retain upstream behavior.
+
+Start with `examples/h3-refmod-numbered.json` (image) or
+`examples/h3-refmod-numbered-video.json` (image + video); replace the example
+library names with actual files. The selection JSON, before string encoding, is:
+
+```json
+{
+  "text_encode": true,
+  "rows": [
+    {"mod": "identity_refmod", "strength": 1.0, "copies": 1},
+    {"mod": "motion_refmod", "strength": 1.0, "reference_fps": 24}
+  ],
+  "retention": 1.0,
+  "scramble_seed": -1
+}
+```
+
+With no other images or videos, the above image/video pair becomes
+`<Picture 1>` and `<Video 1>`. Define subjects explicitly in the prompt, e.g.
+`<Subject 1> is the person from <Picture 1>`. Normal references and start/end
+frames also consume labels. Image RefMods follow normal image references;
+video RefMods fill free native video slots. Images, videos and audio are
+numbered independently. Multi-image RefMods contribute one Picture per latent
+frame, and image `copies` repeat those entries. Video `copies` repeat time
+within the same Video entry. Zero-strength rows are omitted. Scrambling is
+rejected in numbered mode so the requested ordering stays predictable.
+
+#### Reference ordering in prompts
+
+With `text_encode: true`, **image RefMods are appended after the normal
+`image_refs`**, preserving the order of both `image_refs` and the image RefMod
+rows. A RefMod is therefore not always the second reference. For single-image
+RefMods with `copies: 1`, and no start/end frames or continuation:
+
+- One image RefMod alone: `<Picture 1>` = RefMod.
+- One normal image + one image RefMod: `<Picture 1>` = `image_refs[0]`,
+  `<Picture 2>` = RefMod.
+- Two normal images + one image RefMod: `<Picture 1>` = `image_refs[0]`,
+  `<Picture 2>` = `image_refs[1]`, `<Picture 3>` = RefMod.
+- One normal image + two image RefMods: `<Picture 1>` = `image_refs[0]`,
+  `<Picture 2>` = first image RefMod, `<Picture 3>` = second image RefMod.
+
+For example, when the normal image supplies a location and the RefMod supplies
+a person's identity, bind them explicitly:
+
+```text
+subject_definitions: <Subject 1> is the person from <Picture 2>.
+summary: [reference generation] <Subject 1> stands in the courtyard from <Picture 1>.
+```
+
+`<Subject 1>` is a prompt-defined subject, not reference slot 1. The basic
+latent-only RefMod path (`text_encode` absent or `false`) does not assign the
+RefMod one of these numbered media labels.
+
+Start/end frames and other native image conditions can shift Picture numbers.
+In single-window latent continuation, the preceding clip's saved final frame
+occupies `<Picture 1>`; with no other image inputs, the first image RefMod is
+`<Picture 2>`. A video RefMod uses the separate `<Video N>` sequence and does
+not consume a Picture number. With no normal reference videos, the first video
+RefMod is `<Video 1>`, regardless of how many Picture references there are.
+
+Use `result.refmod_reference_maps` as the authoritative mapping for each job.
+The tested normal-image + RefMod request is
+[job-refmod-normal-image-order.json](runs/job-refmod-normal-image-order.json);
+its [verification record](runs/refmod-normal-image-order-verification.json)
+links the native `<Picture 1>` to the Krea image URI and identifies the RefMod
+as `<Picture 2>`.
+
+Results include `refmod_reference_maps`, with the actual labels, library names,
+row indices and image frame/copy indices for each generation. The worker logs
+the mapping before text encoding. Native media entries are marked `source:
+native`. RefMod indices are zero-based; prompt labels start at 1.
+
+Video frames are sampled at two per second for Qwen using `reference_fps`
+(per row, or at selection level; default 24). This describes reconstructed
+playback for text encoding, not output FPS, and cannot recover timing lost by
+compression. Native video trimming is reflected in the decoded presentation.
+Both H3 denoising phases reuse decoded references and verify consistent labels.
+Warm workers discard decoded references after each generation; WanGP's prompt
+cache includes the reconstructed pixels and timestamps.
+
+Numbered mode supports a **single window**, including image-only or video-only
+RefMod selections and Singularity continuation. Set
+`video_length <= sliding_window_size`. For continuation, the assembly overlap
+also consumes capacity: `video_length + sliding_window_overlap - 1` must fit
+within `sliding_window_size`. Using `sliding_window_overlap: 1` leaves saved
+latent history controls independent of that capacity. Sliding windows,
+window prompt modes and frame-scheduler slash commands are rejected. Numbered
+video RefMods cannot share a request with video control/excerpt modes or
+reference-video soundtrack extraction. Audio RefMods are not included in this
+extension; ordinary audio reference inputs remain available. Native limits of
+9 image / 3 video / 3 audio references and 12 references total apply. Missing
+files, failed decoding, unsupported modes or missing presentation entries fail
+the job instead of falling back to unconditioned generation.
+
+For Singularity latent continuation, combine `text_encode: true` with the usual
+`plugin_data.h3_latent_prototype` continuation settings and the matching original
+MP4/checkpoint pair. See `examples/h3-refmod-numbered-continue.json`; replace its
+paths and RefMod names. The continuation's saved final frame is `<Picture 1>`,
+so the first image RefMod is `<Picture 2>` when no other image inputs precede
+it. Video references have separate numbering, starting at `<Video 1>`. Check
+`result.refmod_reference_maps` for the actual labels. Each request generates
+one window; with `save: true`, its output pair can be continued in a new request.
+Existing latent continuation restrictions (including single-phase generation)
+still apply. `patches/h3-latent-native.patch` updates the pinned continuation
+plugin's capture insertion point for the current WanGP source; image builds
+check every native generation insertion point before deployment.
+The headless integration also registers its private task-options snapshot as
+transport metadata with WanGP's setting-name validator; callers continue to
+provide only the public `plugin_data.h3_latent_prototype` options.
+
+VAE decoding and vision encoding add runtime and memory cost. Numbered binding
+is experimental; labels do not guarantee identity separation or motion transfer.
+The CPU tensor regressions run during the Modal image build, even when local
+PyTorch is unavailable.
+
+Verified on `WanGPVideoWorker` with Singularity Ref2VA on 2026-10-03:
+`61c0e893-e2e4-4b91-b970-780495f2f28a` completed with the image RefMod mapped to
+`<Picture 1>`; `da618fd0-b412-4c84-a630-752422801cdb` completed with image and
+video RefMods mapped to `<Picture 1>` and `<Video 1>`. The matching image
+baseline (`1cde92d7-b155-4e22-a4e6-4de4817bce91`) also completed. Requests,
+job results and downloaded MP4s are under `runs/`. These tests verify execution
+and mapping, not general identity or motion-transfer quality. The retained
+`wangp_numbered_video_test_20261003` library fixture was encoded from our
+previously generated garden video using Fizgig's community motion preset.
+
+Singularity numbered RefMod + latent continuation was verified on 2026-10-03
+through `WanGPVideoWorker`: source job `0483fb7b-ed55-43fa-a948-df30384e671f`
+saved 107 frames and continuation job `7f215331-0139-458d-86f5-460754438949`
+saved 213 frames, at 832×480 / 24 FPS with four Euler steps and baseline join
+mode. Both used image and video RefMods. The continuation map contained the
+native `<Picture 1>`, identity RefMod `<Picture 2>`, and motion RefMod `<Video 1>`.
+Both downloaded video/checkpoint pairs passed artifact hashes, video binding,
+and decoded frame-count checks; the continuation checkpoint recorded
+`continuation_mode: "latent"`. The exact requests are
+`runs/job-refmod-numbered-latent-source.json` and
+`runs/job-refmod-numbered-latent-continue.json`. The original
+`runs/job-singularity-latent.json` remains the basic fox example without RefMods.
+Extended-context and audio-prefix join modes were not part of this GPU test.
+
+Normal image + numbered RefMod ordering was also verified on 2026-10-03.
+`WanGPKreaWorker` job `29e5cdb4-ca02-41d0-8a33-474aaa43d45a` created a courtyard
+reference. Fresh Singularity job `7e3560c0-45e1-4983-bd72-6a671f702a75` supplied
+that S3 image through `image_refs[0]` alongside the identity RefMod. Its encoder
+map confirmed `<Picture 1>` = normal image and `<Picture 2>` = identity RefMod;
+the output contained 124 frames at 24 FPS with no continuation inputs. The exact
+request is `runs/job-refmod-normal-image-order.json`, and the asserted mapping,
+input URI/hash and output checks are in
+`runs/refmod-normal-image-order-verification.json`. This verifies reference
+ordering and successful generation, not a quantitative identity-fidelity score.
+
 ## Deploy
 
 The existing `huggingface-secret` Modal secret must contain `HF_TOKEN`. The
@@ -136,6 +333,79 @@ other models, including `krea2_turbo_edit`, retain their normal routes. A direct
 TypeScript client can look up `WanGPKreaWorker` in `wangpt-krea-modal-app` and call
 `run` with its existing job ID, model, and native parameters. No CLI flag is
 needed for direct class calls. See [Krea validation](docs/krea-snapshot.md).
+
+## Krea2 Turbo Edit L40S snapshot worker
+
+`krea_edit_app.py` deploys `WanGPKreaEditWorker` in the independent Modal app
+`wangpt-krea-edit-modal-app`. It accepts only `krea2_turbo_edit`, uses L40S with
+profile 1 and 64 GiB host RAM, and shares the runtime, job store, Volume and S3
+handling. It scales to zero after 300 idle seconds, with at most one container.
+
+Its private warmup edits a synthetic reference and verifies that the Identity
+Edit v1.2 LoRA is active during inference. The snapshot keeps the transformer
+on CUDA and the text encoder, vision encoder and VAE on CPU. Native cleanup
+unloads task LoRAs; each request loads the preset adapter normally.
+
+```bash
+.venv/bin/python -m modal deploy krea_edit_app.py
+.venv/bin/python -m modal run control.py::krea_edit_snapshot_probe
+WANGP_KREA_EDIT_SNAPSHOT=1 .venv/bin/python -m modal run control.py::submit \
+  --model krea2_turbo_edit --kind image --params-file examples/krea2_turbo_edit.json
+```
+
+Replace the example's reference path with an existing `/data` image or an S3
+URI in the configured bucket. The edit route has its own opt-in flag; plain
+Turbo routing still uses `WANGP_KREA_SNAPSHOT`. Memory, container limit and idle
+timeout use `WANGP_KREA_EDIT_MEMORY_MB`, `WANGP_KREA_EDIT_MAX_CONTAINERS` and
+`WANGP_KREA_EDIT_SCALEDOWN_WINDOW`. See [edit snapshot details](docs/krea-edit-snapshot.md).
+
+## Qwen Image 2.1 7B L40S snapshot worker
+
+`qwen_image_21_app.py` deploys `WanGPQwenImage21Worker` in the independent Modal
+app `wangpt-qwen-image-21-modal-app`. It accepts only `qwen_image_21_7B` and uses
+the shared runtime, job store, Volume and S3 handling. The worker uses L40S,
+profile 1, 64 GiB host RAM, zero minimum containers, one maximum container and
+a 300-second idle timeout.
+
+Its private 40-step reference-image warmup exercises editing and the vision
+encoder. Capture keeps the full transformer on CUDA and the text encoder,
+vision encoder and VAE on CPU, without active task LoRAs. Both text-to-image
+and image editing use the same `run(job_id, model, params)` method.
+
+```bash
+.venv/bin/python -m modal deploy qwen_image_21_app.py
+.venv/bin/python -m modal run control.py::qwen_image_21_snapshot_probe
+WANGP_QWEN_IMAGE_21_SNAPSHOT=1 .venv/bin/python -m modal run control.py::submit \
+  --model qwen_image_21_7B --kind image --params-file examples/qwen_image_21_7B.json
+```
+
+The client flag affects only this exact image model. Memory, container limit
+and idle timeout use `WANGP_QWEN_IMAGE_21_MEMORY_MB`,
+`WANGP_QWEN_IMAGE_21_MAX_CONTAINERS` and `WANGP_QWEN_IMAGE_21_SCALEDOWN_WINDOW`.
+See [Qwen snapshot details](docs/qwen-image-21-snapshot.md).
+
+## Qwen Noct Q V4 L40S snapshot worker
+
+`qwen_noctq_app.py` deploys `WanGPQwenNoctQWorker` in the independent app
+`wangpt-qwen-noctq-modal-app`, accepting only `qwen_image_21_noctq_v4`. It uses
+L40S, profile 1, 64 GiB host RAM, zero minimum containers, one maximum container
+and a 300-second idle timeout, with the shared runtime, Volume, jobs and S3.
+
+Private warmup edits a synthetic reference at 1024x1024, 25 steps and guidance
+3. Capture checks the pinned Noct Q V4 checkpoint, the full transformer on CUDA
+and the text encoder, vision encoder and VAE on CPU, with no active task LoRAs.
+
+```bash
+.venv/bin/python -m modal deploy qwen_noctq_app.py
+.venv/bin/python -m modal run control.py::qwen_noctq_snapshot_probe
+WANGP_QWEN_NOCTQ_SNAPSHOT=1 .venv/bin/python -m modal run control.py::submit \
+  --model qwen_image_21_noctq_v4 --kind image \
+  --params-file examples/qwen_image_21_noctq_v4.json
+```
+
+The flag affects only this exact image model. Deployment settings use
+`WANGP_QWEN_NOCTQ_MEMORY_MB`, `WANGP_QWEN_NOCTQ_MAX_CONTAINERS` and
+`WANGP_QWEN_NOCTQ_SCALEDOWN_WINDOW`. See [Noct Q snapshot details](docs/qwen-noctq-snapshot.md).
 
 ## Singularity GPU snapshot experiment
 
@@ -309,6 +579,41 @@ paths in the parameters must remain under `/data`; `_api` is reserved.
 Submission prints a record containing the job ID, queued status, and resolved
 kind. The command invokes the stable deployment, so `modal run --detach` is not
 required.
+
+### Qwen Image 2.1 Noct Q V4
+
+`qwen_image_21_noctq_v4` selects Noctaluna's Noct Q V4 7B checkpoint,
+pinned to Hugging Face revision `a81b9af51120a78e285e57906f2250a2a02080e9`.
+The checkpoint uses INT8 ConvRot. The image applies
+`patches/qwen21-fused-checkpoint.patch` to pass the fused `gate_up` split map
+into MMGP's checkpoint loader; upstream only supplied that map for LoRAs.
+MMGP splits the gate/projection weights and their quantization scales without
+dequantizing. Build-time regression tests load fused INT8, already-split INT8,
+and fused BF16 checkpoints, and reproduce the missing-key error without the map.
+The model inherits the standard Qwen 2.1
+text encoder and VAE. The first generation downloads the roughly 7.3 GB
+checkpoint and any missing shared components into the persistent Volume.
+
+The preset uses 25 steps and guidance 3, with WanGP's FlowMatch Euler
+solver (`sample_solver: "default"`). This is WanGP's native schedule, not
+an exact reproduction of the author's ComfyUI `simple` schedule.
+The model is distributed under the Qwen Research License for non-commercial
+use; see the [model repository](https://huggingface.co/Noctaluna/Noct-Q-Uncensored-Qwen-Image-2.1).
+
+After deploying `app.py` and running `control.py::refresh_catalog`:
+
+```bash
+python3 -m modal run control.py::submit \
+  --model qwen_image_21_noctq_v4 --kind image \
+  --params-file examples/qwen_image_21_noctq_v4.json
+```
+
+GPU verification on 2026-10-04 (Europe/Oslo): job
+`1b4458a6-96dd-458e-bc65-5ff9d77a400a` succeeded on the H100 image worker
+with the example's 1024×1024 teapot prompt, 25 steps, guidance 3, and seed 42.
+The saved JPEG was downloaded, verified against its S3 size/SHA-256, and
+visually inspected. Local artifacts: `runs/noctq-loader-test.jpg` and
+`runs/noctq-loader-test-result.json`.
 
 ### H3 Singularity
 

@@ -1,0 +1,22 @@
+{
+  "model": {
+    "name": "Qwen Image 2.1 Noct Q V4 7B (INT8 ConvRot)",
+    "architecture": "qwen_image_21_7B",
+    "description": "Noctaluna Noct Q V4 Qwen Image 2.1 checkpoint in INT8 ConvRot format. Uses the standard Qwen 2.1 text encoder and VAE. Qwen Research License: non-commercial use only.",
+    "URLs": [
+      "https://huggingface.co/Noctaluna/Noct-Q-Uncensored-Qwen-Image-2.1/resolve/a81b9af51120a78e285e57906f2250a2a02080e9/NoctQ_V4_int8_convrot.safetensors"
+    ]
+  },
+  "image_mode": 1,
+  "resolution": "1024x1536",
+  "num_inference_steps": 25,
+  "sample_solver": "default",
+  "guidance_scale": 3.0,
+  "batch_size": 1,
+  "seed": -1,
+  "prompt_enhancer": "",
+  "custom_settings": {
+    "qwen21_kv_cache": "Disabled",
+    "rgba": "Disabled"
+  }
+}

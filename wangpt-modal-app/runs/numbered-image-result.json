@@ -1,0 +1,56 @@
+{
+  "id": "61c0e893-e2e4-4b91-b970-780495f2f28a",
+  "call_id": "fc-01M41FKB8HNJEH6YB9SQCHVGJ6",
+  "status": "succeeded",
+  "kind": "video",
+  "model": "minimax_h3_ref2va_singularity_pruned",
+  "worker": "WanGPVideoWorker",
+  "worker_app": "wangpt-modal-app",
+  "created_at": "2026-10-03T18:14:39.059135+00:00",
+  "updated_at": "2026-10-03T18:19:01.437642+00:00",
+  "started_at": "2026-10-03T18:14:45.137170+00:00",
+  "progress": {
+    "phase": "inference",
+    "status": "Saving File 2026-10-03-1...mmary [reference generation] Su.mp4",
+    "progress": 15,
+    "current_step": null,
+    "total_steps": null
+  },
+  "result": {
+    "success": true,
+    "outputs": [
+      {
+        "storage": "s3",
+        "bucket": "bucket-rlnfehwax8alyao51e",
+        "key": "runninghub/wangp/61c0e893-e2e4-4b91-b970-780495f2f28a/000-2026-10-03-18h18m57s_seed42_subject_definitions Subject 1 is the person from Picture 1.summary [reference generation] Su.mp4",
+        "uri": "s3://bucket-rlnfehwax8alyao51e/runninghub/wangp/61c0e893-e2e4-4b91-b970-780495f2f28a/000-2026-10-03-18h18m57s_seed42_subject_definitions Subject 1 is the person from Picture 1.summary [reference generation] Su.mp4",
+        "filename": "2026-10-03-18h18m57s_seed42_subject_definitions Subject 1 is the person from Picture 1.summary [reference generation] Su.mp4",
+        "size_bytes": 3573164,
+        "media_type": "video/mp4",
+        "sha256": "06959011099e4f216211ab15df4c79d6088b8539c6305778fc634f01a34df9e5"
+      }
+    ],
+    "total_tasks": 1,
+    "successful_tasks": 1,
+    "failed_tasks": 0,
+    "errors": [],
+    "refmod_reference_maps": [
+      {
+        "references": [
+          {
+            "label": "<Picture 1>",
+            "kind": "image",
+            "source": "refmod",
+            "mod": "rh2089464102377304066_refmod_1791046483417_retry1",
+            "row": 0,
+            "strength": 1.0,
+            "copies": 1,
+            "copy": 0,
+            "frame": 0
+          }
+        ]
+      }
+    ]
+  },
+  "completed_at": "2026-10-03T18:19:01.437629+00:00"
+}

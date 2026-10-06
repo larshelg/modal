@@ -1,0 +1,39 @@
+{
+  "id": "1cde92d7-b155-4e22-a4e6-4de4817bce91",
+  "call_id": "fc-01M41FNCZR24YGMT6TM9XEX29N",
+  "status": "succeeded",
+  "kind": "video",
+  "model": "minimax_h3_ref2va_singularity_pruned",
+  "worker": "WanGPVideoWorker",
+  "worker_app": "wangpt-modal-app",
+  "created_at": "2026-10-03T18:15:46.389050+00:00",
+  "updated_at": "2026-10-03T18:19:38.434609+00:00",
+  "started_at": "2026-10-03T18:19:01.491049+00:00",
+  "progress": {
+    "phase": "inference",
+    "status": "Saving File 2026-10-03-1...mmary [reference generation] Su.mp4",
+    "progress": 15,
+    "current_step": null,
+    "total_steps": null
+  },
+  "result": {
+    "success": true,
+    "outputs": [
+      {
+        "storage": "s3",
+        "bucket": "bucket-rlnfehwax8alyao51e",
+        "key": "runninghub/wangp/1cde92d7-b155-4e22-a4e6-4de4817bce91/000-2026-10-03-18h19m34s_seed42_subject_definitions Subject 1 is the person from Picture 1.summary [reference generation] Su.mp4",
+        "uri": "s3://bucket-rlnfehwax8alyao51e/runninghub/wangp/1cde92d7-b155-4e22-a4e6-4de4817bce91/000-2026-10-03-18h19m34s_seed42_subject_definitions Subject 1 is the person from Picture 1.summary [reference generation] Su.mp4",
+        "filename": "2026-10-03-18h19m34s_seed42_subject_definitions Subject 1 is the person from Picture 1.summary [reference generation] Su.mp4",
+        "size_bytes": 3328672,
+        "media_type": "video/mp4",
+        "sha256": "a4c0106ed57db1f937d0ee5a2f0000148cb44ec516a3f9121d9f1be208b8e497"
+      }
+    ],
+    "total_tasks": 1,
+    "successful_tasks": 1,
+    "failed_tasks": 0,
+    "errors": []
+  },
+  "completed_at": "2026-10-03T18:19:38.434592+00:00"
+}

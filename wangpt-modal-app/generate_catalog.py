@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
+
+from h3_refmod import install_refmod_hooks
 
 
 WAN_ROOT = Path(os.environ.get("WAN2GP_ROOT", "/opt/Wan2GP"))
@@ -29,6 +32,7 @@ def main() -> None:
         console_output=False,
     )
     try:
+        install_refmod_hooks(sys.modules["wgp"])
         models = session.list_model_metadata(include_availability=False)
         defaults = {}
         schemas = {}

@@ -1,0 +1,18 @@
+--- a/models/qwen21/qwen21_handler.py
++++ b/models/qwen21/qwen21_handler.py
+@@ -168,7 +168,14 @@
+         from .vae import AutoencoderKLQwenImage21
+ 
+         config = os.path.join(os.path.dirname(__file__), "configs", "qwen_image_21_7B.json")
+-        transformer = offload.fast_load_transformers_model(model_filename[0], writable_tensors=False, modelClass=QwenImage21Transformer2DModel, defaultConfigPath=config, do_quantize=quantizeTransformer and not save_quantized)
++        # ComfyUI checkpoints fuse SwiGLU rows as [gate_layer; proj]. MMGP
++        # splits quantized data and scales together without dequantizing.
++        transformer = offload.fast_load_transformers_model(
++            model_filename[0], writable_tensors=False,
++            modelClass=QwenImage21Transformer2DModel, defaultConfigPath=config,
++            do_quantize=quantizeTransformer and not save_quantized,
++            fused_split_map={"gate_up": {"mapped_modules": ("gate_layer", "proj")}},
++        )
+         if save_quantized:
+             from wgp import save_quantized_model
+             save_quantized_model(transformer, model_type, model_filename[0], torch.bfloat16, config)

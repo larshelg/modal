@@ -1,0 +1,21 @@
+{
+  "prompt": "subject_definitions: <Subject 1> is the woman from <Picture 2>. <Picture 1> supplies the courtyard location and composition.\nsummary: [reference generation] <Subject 1> stands in the courtyard from <Picture 1>.\nretention_analysis: <Picture 1>: partially_preserved; preserve the cobalt blue arched door, cream stucco walls, terracotta paving, two potted olive trees and wooden bench on the right. <Subject 1>: partially_preserved; preserve the identity and facial features from <Picture 2>, with a fully clothed casual outfit.\ndetailed_description: [Shot 1] A medium-wide, steady eye-level shot. <Subject 1> stands on the paving in front of the blue door, wearing a simple cream blouse and blue jeans. She slowly turns toward the camera and gives a small relaxed smile. One continuous shot, warm afternoon sunlight, subtle movement in the olive leaves.\noverall_soundscape: A gentle breeze through olive leaves and distant birds. No speech.\nnon_diegetic_music: N/A.",
+  "resolution": "832x480",
+  "video_length": 124,
+  "seed": 42,
+  "custom_settings": {
+    "h3_refmod_state": "{\"rows\":[{\"mod\":\"rh2089464102377304066_refmod_1791046483417_retry1\",\"strength\":1.0,\"copies\":1}],\"retention\":1.0,\"scramble_seed\":-1,\"curve\":null,\"text_encode\":true}"
+  },
+  "sliding_window_size": 124,
+  "num_inference_steps": 4,
+  "sample_solver": "euler",
+  "flow_shift": 12.0,
+  "guidance_scale": 1.0,
+  "guidance_phases": 1,
+  "image_refs": [
+    "s3://bucket-rlnfehwax8alyao51e/runninghub/wangp/29e5cdb4-ca02-41d0-8a33-474aaa43d45a/000-2026-10-03-19h08m06s_seed73_Photorealistic architectural photograph of an empty Mediterranean courtyard in warm afternoon sunlig.jpg"
+  ],
+  "video_prompt_type": "I",
+  "force_fps": "24",
+  "multi_prompts_gen_type": "FG"
+}

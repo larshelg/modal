@@ -28,6 +28,12 @@ from wangpt_common import (
 DATA_VOLUME_NAME = "wangp-data"
 KREA_MODEL = "krea2_turbo"
 KREA_WORKER_APP_NAME = "wangpt-krea-modal-app"
+KREA_EDIT_MODEL = "krea2_turbo_edit"
+KREA_EDIT_WORKER_APP_NAME = "wangpt-krea-edit-modal-app"
+QWEN_IMAGE_21_MODEL = "qwen_image_21_7B"
+QWEN_IMAGE_21_WORKER_APP_NAME = "wangpt-qwen-image-21-modal-app"
+QWEN_NOCTQ_MODEL = "qwen_image_21_noctq_v4"
+QWEN_NOCTQ_WORKER_APP_NAME = "wangpt-qwen-noctq-modal-app"
 H3_VDN_MODELS = {
     "full": "minimax_h3_vdn",
     "pruned": "minimax_h3_vdn_pruned",
@@ -221,6 +227,12 @@ def load_deployed_catalog() -> dict[str, Any]:
 
 def generation_worker_name(kind: str, model: str = "") -> str:
     """Map catalog output kinds onto deployed GPU worker classes."""
+    if kind == "image" and model == QWEN_NOCTQ_MODEL and os.environ.get("WANGP_QWEN_NOCTQ_SNAPSHOT", "0") == "1":
+        return "WanGPQwenNoctQWorker"
+    if kind == "image" and model == QWEN_IMAGE_21_MODEL and os.environ.get("WANGP_QWEN_IMAGE_21_SNAPSHOT", "0") == "1":
+        return "WanGPQwenImage21Worker"
+    if kind == "image" and model == KREA_EDIT_MODEL and os.environ.get("WANGP_KREA_EDIT_SNAPSHOT", "0") == "1":
+        return "WanGPKreaEditWorker"
     if kind == "image" and model == KREA_MODEL and os.environ.get("WANGP_KREA_SNAPSHOT", "0") == "1":
         return "WanGPKreaWorker"
     if kind == "video":
@@ -303,7 +315,12 @@ def submit_generation(
     )
 
     worker_name = generation_worker_name(resolved_kind, model)
-    worker_app = KREA_WORKER_APP_NAME if worker_name == "WanGPKreaWorker" else WORKER_APP_NAME
+    worker_app = {
+        "WanGPKreaWorker": KREA_WORKER_APP_NAME,
+        "WanGPKreaEditWorker": KREA_EDIT_WORKER_APP_NAME,
+        "WanGPQwenImage21Worker": QWEN_IMAGE_21_WORKER_APP_NAME,
+        "WanGPQwenNoctQWorker": QWEN_NOCTQ_WORKER_APP_NAME,
+    }.get(worker_name, WORKER_APP_NAME)
     job_id = str(uuid.uuid4())
     timestamp = utc_now()
     record = {
@@ -586,6 +603,27 @@ def snapshot_probe() -> None:
 def krea_snapshot_probe() -> None:
     """Probe the dedicated deployed L40S Krea snapshot pool."""
     worker = modal.Cls.from_name(KREA_WORKER_APP_NAME, "WanGPKreaWorker")
+    print_json(worker().snapshot_info.remote())
+
+
+@app.local_entrypoint()
+def krea_edit_snapshot_probe() -> None:
+    """Probe the dedicated deployed L40S Krea Turbo Edit snapshot pool."""
+    worker = modal.Cls.from_name(KREA_EDIT_WORKER_APP_NAME, "WanGPKreaEditWorker")
+    print_json(worker().snapshot_info.remote())
+
+
+@app.local_entrypoint()
+def qwen_image_21_snapshot_probe() -> None:
+    """Probe the dedicated deployed L40S Qwen Image 2.1 7B snapshot pool."""
+    worker = modal.Cls.from_name(QWEN_IMAGE_21_WORKER_APP_NAME, "WanGPQwenImage21Worker")
+    print_json(worker().snapshot_info.remote())
+
+
+@app.local_entrypoint()
+def qwen_noctq_snapshot_probe() -> None:
+    """Probe the dedicated deployed L40S Noct Q V4 snapshot pool."""
+    worker = modal.Cls.from_name(QWEN_NOCTQ_WORKER_APP_NAME, "WanGPQwenNoctQWorker")
     print_json(worker().snapshot_info.remote())
 
 

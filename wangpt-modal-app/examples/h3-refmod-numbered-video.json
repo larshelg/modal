@@ -1,0 +1,10 @@
+{
+  "prompt": "subject_definitions: <Subject 1> is the person from <Picture 1>. <Video 1> supplies the movement reference.\nsummary: [reference generation] <Subject 1> performs the movement from <Video 1> in a sunlit garden.\nretention_analysis: <Subject 1>: partially_preserved; preserve identity and facial features. <Video 1>: attribute_transfer; use its movement while changing the setting to a garden.\ndetailed_description: [Shot 1] <Subject 1> follows the movement from <Video 1>. One continuous shot, steady camera, warm afternoon light.\noverall_soundscape: Quiet birdsong and a breeze through leaves.\nnon_diegetic_music: N/A.",
+  "resolution": "832x480",
+  "video_length": 107,
+  "seed": 42,
+  "custom_settings": {
+    "h3_refmod_state": "{\"rows\":[{\"mod\":\"identity_refmod\",\"strength\":1.0,\"copies\":1},{\"mod\":\"motion_refmod\",\"strength\":1.0,\"copies\":1,\"reference_fps\":24}],\"retention\":1.0,\"scramble_seed\":-1,\"curve\":null,\"text_encode\":true}"
+  },
+  "sliding_window_size": 124
+}

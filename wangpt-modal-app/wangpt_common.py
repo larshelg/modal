@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from h3_latent import validate_plugin_data
+from h3_refmod_numbered import validate_numbered_request
 
 
 WORKER_APP_NAME = "wangpt-modal-app"
@@ -36,6 +37,7 @@ def validate_job_request(model: str, params: dict[str, Any]) -> dict[str, Any]:
     if "_api" in params:
         raise ValueError("params._api is reserved by the runtime")
     validate_plugin_data(params)
+    validate_numbered_request(params)
     settings = dict(params)
     settings["model_type"] = model
     return settings

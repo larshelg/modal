@@ -1,0 +1,10 @@
+{
+  "prompt": "Photorealistic architectural photograph of an empty Mediterranean courtyard in warm afternoon sunlight. A distinctive cobalt blue arched door centered on a cream stucco wall, terracotta paving stones, two large terracotta pots containing olive trees, and a simple wooden bench on the right. Eye-level wide composition with open space in the foreground for a person to stand. Natural colors, realistic textures, soft shadows, no people, no text.",
+  "negative_prompt": "blurry, low quality",
+  "resolution": "1024x576",
+  "num_inference_steps": 8,
+  "seed": 73,
+  "batch_size": 1,
+  "guidance_scale": 0,
+  "flow_shift": 5.0
+}

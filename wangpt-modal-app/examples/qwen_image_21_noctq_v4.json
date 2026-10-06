@@ -1,0 +1,10 @@
+{
+  "prompt": "A photograph of a red ceramic teapot on a rustic wooden table beside a window. Soft morning light, natural shadows, detailed ceramic texture, a small green plant in the background.",
+  "negative_prompt": "blurry, low quality, distorted, watermark",
+  "resolution": "1024x1024",
+  "num_inference_steps": 25,
+  "sample_solver": "default",
+  "guidance_scale": 3.0,
+  "seed": 42,
+  "batch_size": 1
+}

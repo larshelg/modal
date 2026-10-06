@@ -1,0 +1,39 @@
+{
+  "call_id": "fc-01M46NDX5GP9F0TCRQFMYTANGC",
+  "completed_at": "2026-10-05T18:35:54.288333+00:00",
+  "created_at": "2026-10-05T18:32:44.167756+00:00",
+  "id": "b769f470-2de7-4228-a782-fb818ea74e48",
+  "kind": "image",
+  "model": "qwen_image_21_7B",
+  "progress": {
+    "current_step": null,
+    "phase": "inference",
+    "progress": 15,
+    "status": "Saving File 2026-10-05-1...t, detailed product photograph..jpg",
+    "total_steps": null
+  },
+  "result": {
+    "errors": [],
+    "failed_tasks": 0,
+    "outputs": [
+      {
+        "bucket": "bucket-rlnfehwax8alyao51e",
+        "filename": "2026-10-05-18h35m52s_seed42_A red ceramic teapot on a wooden table, soft window light, detailed product photograph..jpg",
+        "key": "runninghub/wangp/b769f470-2de7-4228-a782-fb818ea74e48/000-2026-10-05-18h35m52s_seed42_A red ceramic teapot on a wooden table, soft window light, detailed product photograph..jpg",
+        "media_type": "image/jpeg",
+        "sha256": "f07f67f16cde637d95b7a6eb48dec6fbf0470e6a24b01edd9b53564b673defc5",
+        "size_bytes": 77052,
+        "storage": "s3",
+        "uri": "s3://bucket-rlnfehwax8alyao51e/runninghub/wangp/b769f470-2de7-4228-a782-fb818ea74e48/000-2026-10-05-18h35m52s_seed42_A red ceramic teapot on a wooden table, soft window light, detailed product photograph..jpg"
+      }
+    ],
+    "success": true,
+    "successful_tasks": 1,
+    "total_tasks": 1
+  },
+  "started_at": "2026-10-05T18:32:49.791756+00:00",
+  "status": "succeeded",
+  "updated_at": "2026-10-05T18:35:54.288370+00:00",
+  "worker": "WanGPImageWorker",
+  "worker_app": "wangpt-modal-app"
+}

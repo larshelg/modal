@@ -1,0 +1,66 @@
+{
+  "id": "da618fd0-b412-4c84-a630-752422801cdb",
+  "call_id": "fc-01M41FT6CNZD4MWFMQC7X3TC03",
+  "status": "succeeded",
+  "kind": "video",
+  "model": "minimax_h3_ref2va_singularity_pruned",
+  "worker": "WanGPVideoWorker",
+  "worker_app": "wangpt-modal-app",
+  "created_at": "2026-10-03T18:18:23.441555+00:00",
+  "updated_at": "2026-10-03T18:20:39.754328+00:00",
+  "started_at": "2026-10-03T18:19:38.506230+00:00",
+  "progress": {
+    "phase": "inference",
+    "status": "Saving File 2026-10-03-1...deo 1 supplies the movement ref.mp4",
+    "progress": 15,
+    "current_step": null,
+    "total_steps": null
+  },
+  "result": {
+    "success": true,
+    "outputs": [
+      {
+        "storage": "s3",
+        "bucket": "bucket-rlnfehwax8alyao51e",
+        "key": "runninghub/wangp/da618fd0-b412-4c84-a630-752422801cdb/000-2026-10-03-18h20m37s_seed42_subject_definitions Subject 1 is the person from Picture 1. Video 1 supplies the movement ref.mp4",
+        "uri": "s3://bucket-rlnfehwax8alyao51e/runninghub/wangp/da618fd0-b412-4c84-a630-752422801cdb/000-2026-10-03-18h20m37s_seed42_subject_definitions Subject 1 is the person from Picture 1. Video 1 supplies the movement ref.mp4",
+        "filename": "2026-10-03-18h20m37s_seed42_subject_definitions Subject 1 is the person from Picture 1. Video 1 supplies the movement ref.mp4",
+        "size_bytes": 3149944,
+        "media_type": "video/mp4",
+        "sha256": "acb978fd12f4db4ae90b1e0e574b9187111f879fa2f12f2c4ed41e2fcba79e99"
+      }
+    ],
+    "total_tasks": 1,
+    "successful_tasks": 1,
+    "failed_tasks": 0,
+    "errors": [],
+    "refmod_reference_maps": [
+      {
+        "references": [
+          {
+            "label": "<Picture 1>",
+            "kind": "image",
+            "source": "refmod",
+            "mod": "rh2089464102377304066_refmod_1791046483417_retry1",
+            "row": 0,
+            "strength": 1.0,
+            "copies": 1,
+            "copy": 0,
+            "frame": 0
+          },
+          {
+            "label": "<Video 1>",
+            "kind": "video",
+            "source": "refmod",
+            "mod": "wangp_numbered_video_test_20261003",
+            "row": 1,
+            "strength": 1.0,
+            "copies": 1,
+            "reference_fps": 24
+          }
+        ]
+      }
+    ]
+  },
+  "completed_at": "2026-10-03T18:20:39.754303+00:00"
+}

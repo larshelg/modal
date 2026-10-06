@@ -1,0 +1,159 @@
+{
+  "boot_id": "b5a3bad1-2998-4411-b846-60c419d120a8",
+  "capture_id": "13a440e1-1139-4d2d-aab5-425cca11aced",
+  "capture_memory": {
+    "component_logical_elements_by_device": {
+      "text_encoder": {
+        "cpu": 4022468664
+      },
+      "transformer": {
+        "cuda:0": 12820073484
+      },
+      "vae": {
+        "cpu": 126892531
+      },
+      "vision_encoder": {
+        "cpu": 415347728
+      }
+    },
+    "cpu_rss_bytes": 32298127360,
+    "cuda_allocated_bytes": 13501398016,
+    "cuda_peak_allocated_bytes": 16100565504,
+    "cuda_reserved_bytes": 13602127872,
+    "gpu_free_bytes": 33451802624,
+    "gpu_name": "NVIDIA L40S",
+    "gpu_total_bytes": 47695921152,
+    "mmgp_active_models": [
+      "transformer"
+    ]
+  },
+  "current_memory": {
+    "component_logical_elements_by_device": {
+      "text_encoder": {
+        "cpu": 4022468664
+      },
+      "transformer": {
+        "cpu": 12820073484
+      },
+      "vae": {
+        "cpu": 126892531
+      },
+      "vision_encoder": {
+        "cpu": 415347728
+      }
+    },
+    "cpu_rss_bytes": 31452061696,
+    "cuda_allocated_bytes": 9569280,
+    "cuda_peak_allocated_bytes": 16100565504,
+    "cuda_reserved_bytes": 23068672,
+    "gpu_free_bytes": 47030861824,
+    "gpu_name": "NVIDIA L40S",
+    "gpu_total_bytes": 47695921152,
+    "mmgp_active_models": []
+  },
+  "last_request": {
+    "elapsed_seconds": 20.693,
+    "job_id": "d80e79c2-119c-4bab-97b2-1dc598c07afc",
+    "load_models_calls": 0,
+    "model_reused": true
+  },
+  "loaded": {
+    "active_loras": [],
+    "config": "",
+    "edit_lora": "krea2_identity_edit_v1_2.safetensors",
+    "model": "krea2_turbo_edit",
+    "profile": 1.0
+  },
+  "requests_served": 1,
+  "restore_memory": {
+    "component_logical_elements_by_device": {
+      "text_encoder": {
+        "cpu": 4022468664
+      },
+      "transformer": {
+        "cuda:0": 12820073484
+      },
+      "vae": {
+        "cpu": 126892531
+      },
+      "vision_encoder": {
+        "cpu": 415347728
+      }
+    },
+    "cpu_rss_bytes": 28300083200,
+    "cuda_allocated_bytes": 13501398016,
+    "cuda_peak_allocated_bytes": 16100565504,
+    "cuda_reserved_bytes": 13602127872,
+    "gpu_free_bytes": 33451802624,
+    "gpu_name": "NVIDIA L40S",
+    "gpu_total_bytes": 47695921152,
+    "mmgp_active_models": [
+      "transformer"
+    ]
+  },
+  "revision": "krea2-turbo-edit-l40s-transformer-v1",
+  "transformer_residency": {
+    "after": {
+      "component_logical_elements_by_device": {
+        "text_encoder": {
+          "cpu": 4022468664
+        },
+        "transformer": {
+          "cuda:0": 12820073484
+        },
+        "vae": {
+          "cpu": 126892531
+        },
+        "vision_encoder": {
+          "cpu": 415347728
+        }
+      },
+      "cpu_rss_bytes": 32298127360,
+      "cuda_allocated_bytes": 13501398016,
+      "cuda_peak_allocated_bytes": 16100565504,
+      "cuda_reserved_bytes": 13602127872,
+      "gpu_free_bytes": 33451802624,
+      "gpu_name": "NVIDIA L40S",
+      "gpu_total_bytes": 47695921152,
+      "mmgp_active_models": [
+        "transformer"
+      ]
+    },
+    "before": {
+      "component_logical_elements_by_device": {
+        "text_encoder": {
+          "cpu": 4022468664
+        },
+        "transformer": {
+          "cpu": 12820073484
+        },
+        "vae": {
+          "cpu": 126892531
+        },
+        "vision_encoder": {
+          "cpu": 415347728
+        }
+      },
+      "cpu_rss_bytes": 32298127360,
+      "cuda_allocated_bytes": 9569280,
+      "cuda_peak_allocated_bytes": 16100565504,
+      "cuda_reserved_bytes": 23068672,
+      "gpu_free_bytes": 47030861824,
+      "gpu_name": "NVIDIA L40S",
+      "gpu_total_bytes": 47695921152,
+      "mmgp_active_models": []
+    },
+    "cuda_delta_bytes": 13491828736,
+    "seconds": 1.024
+  },
+  "warmup": {
+    "active_loras": [],
+    "config": "",
+    "edit_lora": "krea2_identity_edit_v1_2.safetensors",
+    "edit_lora_verified_during_warmup": true,
+    "initialize_seconds": 150.728,
+    "model": "krea2_turbo_edit",
+    "profile": 1.0,
+    "warmup_seconds": 56.838
+  }
+}

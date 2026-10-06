@@ -25,22 +25,3 @@
   "image_prompt_type": "V",
   "video_source": "s3://bucket-rlnfehwax8alyao51e/runninghub/wangp/27db2109-da3d-4dbb-a5a6-9722009a27f0/000-2026-09-21-21h01m38s_seed42_summary A red fox walks through fresh snow in a quiet pine forest.detailed_description [Shot 1] A.mp4"
 }
-
-Those control how much saved history the plugin uses when continuing a clip. I checked the pinned
-  0.3.4 source.
-
-  - video_context_frames: accepts 18, 35, or 52, default 35. Selects saved video latent history. At 24
-    FPS, that’s approximately 0.75, 1.46, or 2.17 seconds.
-
-  - audio_context_seconds: accepts 0.5, 1.0, or 2.0, default 1.0. Selects saved audio history.
-  - join_mode: accepts the three modes below; default "baseline". Parameter definitions
-
-  The modes behave as follows:
-
-  - "baseline" — ignores both context controls. Uses at least 18 frames of history when available, or
-    more if the native overlap is larger.
-
-  - "context" — uses your selected video and audio history to condition the continuation.
-  - "audio_prefix" — uses extended video history and freezes the preceding audio latents during
-    generation. It decodes the old audio prefix and new audio together, then removes the prefix, aiming
-    to reduce the audible seam. Requires No Skipping and no additional audio guides.

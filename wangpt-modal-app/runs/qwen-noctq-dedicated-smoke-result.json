@@ -1,0 +1,39 @@
+{
+  "call_id": "fc-01M46PVB6SHFBVV90Y1009MEGA",
+  "completed_at": "2026-10-05T19:02:58.574697+00:00",
+  "created_at": "2026-10-05T18:57:32.992867+00:00",
+  "id": "8bcccb08-b9e7-42a7-83b6-3978efaab1b0",
+  "kind": "image",
+  "model": "qwen_image_21_noctq_v4",
+  "progress": {
+    "current_step": null,
+    "phase": "inference",
+    "progress": 15,
+    "status": "Saving File 2026-10-05-1...a window. Soft morning light, n.jpg",
+    "total_steps": null
+  },
+  "result": {
+    "errors": [],
+    "failed_tasks": 0,
+    "outputs": [
+      {
+        "bucket": "bucket-rlnfehwax8alyao51e",
+        "filename": "2026-10-05-19h02m56s_seed42_A photograph of a red ceramic teapot on a rustic wooden table beside a window. Soft morning light, n.jpg",
+        "key": "runninghub/wangp/8bcccb08-b9e7-42a7-83b6-3978efaab1b0/000-2026-10-05-19h02m56s_seed42_A photograph of a red ceramic teapot on a rustic wooden table beside a window. Soft morning light, n.jpg",
+        "media_type": "image/jpeg",
+        "sha256": "5df527e41a62aaaf6d73d2098d2a7cd0b59d7707916b525063745cd28bb10037",
+        "size_bytes": 384504,
+        "storage": "s3",
+        "uri": "s3://bucket-rlnfehwax8alyao51e/runninghub/wangp/8bcccb08-b9e7-42a7-83b6-3978efaab1b0/000-2026-10-05-19h02m56s_seed42_A photograph of a red ceramic teapot on a rustic wooden table beside a window. Soft morning light, n.jpg"
+      }
+    ],
+    "success": true,
+    "successful_tasks": 1,
+    "total_tasks": 1
+  },
+  "started_at": "2026-10-05T19:02:28.030194+00:00",
+  "status": "succeeded",
+  "updated_at": "2026-10-05T19:02:58.574708+00:00",
+  "worker": "WanGPQwenNoctQWorker",
+  "worker_app": "wangpt-qwen-noctq-modal-app"
+}

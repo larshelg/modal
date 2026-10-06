@@ -1,0 +1,38 @@
+{
+  "id": "f258a7bf-1ac4-440c-8868-2d21d51bf558",
+  "call_id": "fc-01M41Y4QYCSG4H87SGYECGZ9RK",
+  "status": "succeeded",
+  "kind": "image",
+  "model": "qwen_image_21_noctq_v4",
+  "worker": "WanGPImageWorker",
+  "worker_app": "wangpt-modal-app",
+  "created_at": "2026-10-03T22:28:48.795000+00:00",
+  "updated_at": "2026-10-03T22:29:33.968209+00:00",
+  "progress": {
+    "phase": "inference",
+    "status": "Saving File 2026-10-03-2...e a window. Soft morning light,.jpg",
+    "progress": 15,
+    "current_step": null,
+    "total_steps": null
+  },
+  "result": {
+    "success": true,
+    "outputs": [
+      {
+        "storage": "s3",
+        "bucket": "bucket-rlnfehwax8alyao51e",
+        "key": "runninghub/wangp/f258a7bf-1ac4-440c-8868-2d21d51bf558/000-2026-10-03-22h29m32s_seed42_A photograph of a green ceramic teapot on a rustic wooden table beside a window. Soft morning light,.jpg",
+        "uri": "s3://bucket-rlnfehwax8alyao51e/runninghub/wangp/f258a7bf-1ac4-440c-8868-2d21d51bf558/000-2026-10-03-22h29m32s_seed42_A photograph of a green ceramic teapot on a rustic wooden table beside a window. Soft morning light,.jpg",
+        "filename": "2026-10-03-22h29m32s_seed42_A photograph of a green ceramic teapot on a rustic wooden table beside a window. Soft morning light,.jpg",
+        "size_bytes": 354752,
+        "media_type": "image/jpeg",
+        "sha256": "e05755f894cfbd4b02094e70f8f3b9cfa741dab92b50eed5c24c5f2eb53d213f"
+      }
+    ],
+    "total_tasks": 1,
+    "successful_tasks": 1,
+    "failed_tasks": 0,
+    "errors": []
+  },
+  "completed_at": "2026-10-03T22:29:33.968199+00:00"
+}

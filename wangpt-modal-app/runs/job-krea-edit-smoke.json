@@ -1,0 +1,15 @@
+{
+  "prompt": "Change the cobalt blue arched door in image 1 to deep red; keep the courtyard, camera angle, pots, bench and lighting unchanged.",
+  "image_refs": [
+    "s3://bucket-rlnfehwax8alyao51e/runninghub/wangp/29e5cdb4-ca02-41d0-8a33-474aaa43d45a/000-2026-10-03-19h08m06s_seed73_Photorealistic architectural photograph of an empty Mediterranean courtyard in warm afternoon sunlig.jpg"
+  ],
+  "video_prompt_type": "KI",
+  "remove_background_images_ref": 0,
+  "resolution": "1024x576",
+  "num_inference_steps": 8,
+  "guidance_scale": 0,
+  "flow_shift": 5.0,
+  "model_mode": 0,
+  "seed": 12345,
+  "batch_size": 1
+}

@@ -1,0 +1,76 @@
+{
+  "id": "0483fb7b-ed55-43fa-a948-df30384e671f",
+  "call_id": "fc-01M41HMVR6CGC72VVV8P2G4TSH",
+  "status": "succeeded",
+  "kind": "video",
+  "model": "minimax_h3_ref2va_singularity_pruned",
+  "worker": "WanGPVideoWorker",
+  "worker_app": "wangpt-modal-app",
+  "created_at": "2026-10-03T18:50:25.823254+00:00",
+  "updated_at": "2026-10-03T18:54:12.583012+00:00",
+  "started_at": "2026-10-03T18:50:30.487549+00:00",
+  "progress": {
+    "phase": "inference",
+    "status": "Saving File 2026-10-03-1...deo 1 supplies the movement ref.mp4",
+    "progress": 15,
+    "current_step": null,
+    "total_steps": null
+  },
+  "result": {
+    "success": true,
+    "outputs": [
+      {
+        "storage": "s3",
+        "bucket": "bucket-rlnfehwax8alyao51e",
+        "key": "runninghub/wangp/0483fb7b-ed55-43fa-a948-df30384e671f/000-2026-10-03-18h54m03s_seed42_subject_definitions Subject 1 is the person from Picture 1. Video 1 supplies the movement ref.mp4",
+        "uri": "s3://bucket-rlnfehwax8alyao51e/runninghub/wangp/0483fb7b-ed55-43fa-a948-df30384e671f/000-2026-10-03-18h54m03s_seed42_subject_definitions Subject 1 is the person from Picture 1. Video 1 supplies the movement ref.mp4",
+        "filename": "2026-10-03-18h54m03s_seed42_subject_definitions Subject 1 is the person from Picture 1. Video 1 supplies the movement ref.mp4",
+        "size_bytes": 3150346,
+        "media_type": "video/mp4",
+        "sha256": "6d2ee660a37b54fa0cdcadf22f19476a4c8a0cb5028e2460bf3759ac59610697"
+      },
+      {
+        "storage": "s3",
+        "bucket": "bucket-rlnfehwax8alyao51e",
+        "key": "runninghub/wangp/0483fb7b-ed55-43fa-a948-df30384e671f/001-2026-10-03-18h54m03s_seed42_subject_definitions Subject 1 is the person from Picture 1. Video 1 supplies the movement ref.safetensors",
+        "uri": "s3://bucket-rlnfehwax8alyao51e/runninghub/wangp/0483fb7b-ed55-43fa-a948-df30384e671f/001-2026-10-03-18h54m03s_seed42_subject_definitions Subject 1 is the person from Picture 1. Video 1 supplies the movement ref.safetensors",
+        "filename": "2026-10-03-18h54m03s_seed42_subject_definitions Subject 1 is the person from Picture 1. Video 1 supplies the movement ref.safetensors",
+        "size_bytes": 9632688,
+        "media_type": "application/octet-stream",
+        "sha256": "771ba1aff8a22207f885f20a8a5cf926b55c8648e9f1981c4119b990dbd9ca58"
+      }
+    ],
+    "total_tasks": 1,
+    "successful_tasks": 1,
+    "failed_tasks": 0,
+    "errors": [],
+    "refmod_reference_maps": [
+      {
+        "references": [
+          {
+            "label": "<Picture 1>",
+            "kind": "image",
+            "source": "refmod",
+            "mod": "rh2089464102377304066_refmod_1791046483417_retry1",
+            "row": 0,
+            "strength": 1.0,
+            "copies": 1,
+            "copy": 0,
+            "frame": 0
+          },
+          {
+            "label": "<Video 1>",
+            "kind": "video",
+            "source": "refmod",
+            "mod": "wangp_numbered_video_test_20261003",
+            "row": 1,
+            "strength": 1.0,
+            "copies": 1,
+            "reference_fps": 24
+          }
+        ]
+      }
+    ]
+  },
+  "completed_at": "2026-10-03T18:54:12.583000+00:00"
+}

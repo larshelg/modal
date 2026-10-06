@@ -16,6 +16,9 @@ from urllib.parse import unquote, urlsplit
 
 import modal
 
+from h3_refmod import REFMOD_COMMIT, REFMOD_ROOT, install_refmod_hooks
+from h3_refmod_numbered import REPORTS_ATTR, prepare_numbered_job
+
 from h3_latent import (
     PLUGIN_COMMIT,
     PLUGIN_KEY,
@@ -166,10 +169,23 @@ gpu_image = (
         remote_path=str(WAN_ROOT / "finetunes"),
         copy=True,
     )
-    .run_commands("python /opt/generate_catalog.py")
     .run_commands(
         f"git clone https://github.com/g3n3rativ3/wan2gp-h3-latent-continue.git {PLUGIN_ROOT}",
         f"cd {PLUGIN_ROOT} && git checkout {PLUGIN_COMMIT}",
+    )
+    .run_commands(
+        f"git clone https://github.com/g3n3rativ3/MiniMaxH3Mod-for-WanGP.git {REFMOD_ROOT}",
+        f"cd {REFMOD_ROOT} && git checkout {REFMOD_COMMIT}",
+    )
+    .add_local_file(
+        str(Path(__file__).with_name("h3_refmod.py")),
+        remote_path=str(WAN_ROOT / "h3_refmod.py"),
+        copy=True,
+    )
+    .add_local_file(
+        str(Path(__file__).with_name("h3_refmod_numbered.py")),
+        remote_path=str(WAN_ROOT / "h3_refmod_numbered.py"),
+        copy=True,
     )
     .add_local_file(
         str(Path(__file__).with_name("patches") / "h3-latent-mux.patch"),
@@ -180,6 +196,35 @@ gpu_image = (
         f"cd {WAN_ROOT} && git apply --check /opt/h3-latent-mux.patch && git apply /opt/h3-latent-mux.patch",
     )
     .add_local_python_source("wangpt_common", "h3_latent", "h3_mux", copy=True)
+    .add_local_file(
+        str(Path(__file__).with_name("patches") / "h3-latent-native.patch"),
+        remote_path="/opt/h3-latent-native.patch",
+        copy=True,
+    )
+    .run_commands(
+        f"cd {PLUGIN_ROOT} && git apply --check /opt/h3-latent-native.patch && git apply /opt/h3-latent-native.patch",
+    )
+    .add_local_file(
+        str(Path(__file__).with_name("tests") / "test_h3_refmod_numbered_runtime.py"),
+        remote_path="/opt/test_h3_refmod_numbered_runtime.py",
+        copy=True,
+    )
+    .run_commands("python /opt/test_h3_refmod_numbered_runtime.py")
+    .run_commands("python /opt/generate_catalog.py")
+    .add_local_file(
+        str(Path(__file__).with_name("patches") / "qwen21-fused-checkpoint.patch"),
+        remote_path="/opt/qwen21-fused-checkpoint.patch",
+        copy=True,
+    )
+    .run_commands(
+        f"cd {WAN_ROOT} && git apply --check /opt/qwen21-fused-checkpoint.patch && git apply /opt/qwen21-fused-checkpoint.patch",
+    )
+    .add_local_file(
+        str(Path(__file__).with_name("tests") / "test_qwen21_loader_runtime.py"),
+        remote_path="/opt/test_qwen21_loader_runtime.py",
+        copy=True,
+    )
+    .run_commands("python /opt/test_qwen21_loader_runtime.py")
 )
 
 # Share the expensive WanGP build layers while keeping independent Modal images
@@ -547,6 +592,7 @@ class WanGPRuntime:
         # Install the identity loader before any model is cached by this process,
         # including ordinary jobs followed by a latent-enabled job on a warm worker.
         install_headless_hooks(sys.modules["wgp"])
+        install_refmod_hooks(sys.modules["wgp"])
         return session
 
     def _session_for(self, model: str) -> Any:
@@ -628,6 +674,7 @@ class WanGPRuntime:
                 log_runtime_stage(job_id, "session_ready", model=model)
                 settings = session.get_default_settings(model).copy()
                 settings.update(materialized_params)
+                prepare_numbered_job(sys.modules["wgp"], settings)
                 prepare_latent_job(sys.modules["wgp"], settings)
                 log_runtime_stage(job_id, "submit_start", model=model)
                 job = session.submit_task(
@@ -665,6 +712,9 @@ class WanGPRuntime:
             # enters the mounted Volume.
             data_volume.commit()
             payload = serialize_result(result, outputs)
+            reference_maps = getattr(sys.modules["wgp"], REPORTS_ATTR, [])
+            if reference_maps:
+                payload["refmod_reference_maps"] = reference_maps
             status = "succeeded" if result.success else "failed"
             record = job_store.get(job_id, record)
             record.update(

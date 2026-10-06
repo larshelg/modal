@@ -1,0 +1,9 @@
+{
+  "prompt": "A woman walks through a sunlit garden, natural movement, cinematic lighting.",
+  "resolution": "832x480",
+  "video_length": 107,
+  "seed": 42,
+  "custom_settings": {
+    "h3_refmod_state": "{\"rows\":[{\"mod\":\"linda_refmod_v1\",\"strength\":1.0,\"copies\":1}],\"retention\":1.0,\"scramble_seed\":-1,\"curve\":null}"
+  }
+}

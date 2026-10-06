@@ -1,0 +1,28 @@
+{
+  "id": "22a26d91-f639-4d16-ba8c-7ac42088d89d",
+  "call_id": "fc-01M41GZJ9W161MYSAH9TBENS7A",
+  "status": "failed",
+  "kind": "video",
+  "model": "minimax_h3_ref2va_singularity_pruned",
+  "worker": "WanGPVideoWorker",
+  "worker_app": "wangpt-modal-app",
+  "created_at": "2026-10-03T18:38:48.026899+00:00",
+  "updated_at": "2026-10-03T18:42:46.759027+00:00",
+  "started_at": "2026-10-03T18:41:18.979933+00:00",
+  "result": {
+    "success": false,
+    "outputs": [],
+    "total_tasks": 1,
+    "successful_tasks": 0,
+    "failed_tasks": 1,
+    "errors": [
+      {
+        "message": "Unknown setting: _h3_latent_task_options_v1. Model-specific options belong in custom_settings.",
+        "stage": "validation",
+        "task_index": 1,
+        "task_id": 1
+      }
+    ]
+  },
+  "completed_at": "2026-10-03T18:42:46.759009+00:00"
+}

@@ -54,6 +54,11 @@ def native_task(settings: dict[str, Any]) -> dict[str, Any]:
 
 def install_headless_hooks(wgp: Any) -> Any:
     """Reuse upstream wrappers without constructing UI components or a server."""
+    # Current WanGP validates task parameter names before dispatch. This private,
+    # task-owned snapshot is plugin transport, not a model setting; public input
+    # still cannot provide it (validate_plugin_data rejects TASK_KEY).
+    setting_names = importlib.import_module("shared.utils.setting_names")
+    setting_names.NON_SETTING_KEYS = setting_names.NON_SETTING_KEYS | {TASK_KEY}
     if PACKAGE not in sys.modules:
         spec = importlib.util.spec_from_file_location(
             PACKAGE, PLUGIN_ROOT / "__init__.py",

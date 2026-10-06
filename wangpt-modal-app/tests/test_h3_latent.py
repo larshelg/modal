@@ -60,6 +60,8 @@ def test_headless_install_preserves_wrapper_chain_and_is_idempotent(monkeypatch)
     monkeypatch.setitem(sys.modules, PACKAGE, SimpleNamespace())
     monkeypatch.setitem(sys.modules, f"{PACKAGE}.integration", integration)
     monkeypatch.setitem(sys.modules, f"{PACKAGE}.native_bridge", SimpleNamespace(install_loader=lambda: calls.append("loader")))
+    names = SimpleNamespace(NON_SETTING_KEYS=frozenset({"model_type"}))
+    monkeypatch.setitem(sys.modules, "shared.utils.setting_names", names)
     wgp = SimpleNamespace(
         generate_media=lambda value: value,
         save_video=lambda value: value,
@@ -73,6 +75,7 @@ def test_headless_install_preserves_wrapper_chain_and_is_idempotent(monkeypatch)
     assert wgp.generate_media is first_wrapper
     assert wgp.generate_media("result") == "result"
     assert calls == ["loader", "wrapper"]
+    assert names.NON_SETTING_KEYS == frozenset({"model_type", TASK_KEY})
 
 
 @pytest.mark.parametrize("params", [

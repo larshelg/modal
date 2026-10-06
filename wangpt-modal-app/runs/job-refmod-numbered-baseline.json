@@ -1,0 +1,15 @@
+{
+  "prompt": "subject_definitions: <Subject 1> is the person from <Picture 1>.\nsummary: [reference generation] <Subject 1> stands in a sunlit garden.\nretention_analysis: <Subject 1>: partially_preserved; preserve identity and facial features while changing the environment to a garden.\ndetailed_description: [Shot 1] <Subject 1> slowly turns toward the camera. One continuous shot, warm afternoon light, softly blurred green foliage.\noverall_soundscape: Quiet birdsong and a breeze through leaves.\nnon_diegetic_music: N/A.",
+  "resolution": "832x480",
+  "video_length": 107,
+  "seed": 42,
+  "custom_settings": {
+    "h3_refmod_state": "{\"rows\":[{\"mod\":\"rh2089464102377304066_refmod_1791046483417_retry1\",\"strength\":1.0,\"copies\":1}],\"retention\":1.0,\"scramble_seed\":-1,\"curve\":null,\"text_encode\":false}"
+  },
+  "sliding_window_size": 124,
+  "num_inference_steps": 4,
+  "sample_solver": "euler",
+  "flow_shift": 12.0,
+  "guidance_scale": 1.0,
+  "guidance_phases": 1
+}

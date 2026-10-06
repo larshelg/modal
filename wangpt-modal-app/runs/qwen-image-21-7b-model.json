@@ -1,0 +1,219 @@
+[
+  {
+    "base_model_type": "qwen_image_21_7B",
+    "capabilities": {
+      "audio_output": false,
+      "audio_to_audio": false,
+      "audio_to_video": false,
+      "background_image": true,
+      "control_image": true,
+      "control_video": false,
+      "image_to_image": true,
+      "image_to_video": false,
+      "injected_frames": false,
+      "inpainting": true,
+      "lora": true,
+      "outpainting": true,
+      "reference_images": true,
+      "reference_videos": false,
+      "sliding_window": false,
+      "text_to_audio": false,
+      "text_to_image": true,
+      "text_to_video": false,
+      "video_continuation": false,
+      "video_to_video": false
+    },
+    "family": "qwen_image_2",
+    "family_label": "Qwen Image 2.1",
+    "finetune": false,
+    "inputs": [
+      "text",
+      "image"
+    ],
+    "main_output": [
+      "image"
+    ],
+    "media_inputs": {
+      "audio": {
+        "control": false,
+        "output": false,
+        "prompt": false,
+        "reference": false
+      },
+      "image": {
+        "background": true,
+        "control": true,
+        "end": false,
+        "injected_frames": false,
+        "mask": true,
+        "multiple_references": true,
+        "reference": true,
+        "single_reference": false,
+        "start": false
+      },
+      "video": {
+        "continue": false,
+        "control": false,
+        "last": false,
+        "mask": false,
+        "reference": false
+      }
+    },
+    "model_type": "qwen_image_21_7B",
+    "name": "Qwen Image 2.1 TextImage2Image 7B",
+    "outputs": [
+      "image"
+    ],
+    "setting_values": {
+      "audio_prompt_type": {
+        "custom_option": null,
+        "sources": null
+      },
+      "image_prompt_type": {
+        "allowed": "",
+        "choices": [
+          {
+            "label": "Text/new generation",
+            "value": ""
+          }
+        ]
+      },
+      "model_mode": {
+        "choices": [
+          {
+            "label": "Masked Denoising",
+            "value": ""
+          },
+          {
+            "label": "LanPaint (2 steps)",
+            "value": "2"
+          },
+          {
+            "label": "LanPaint (5 steps)",
+            "value": "3"
+          },
+          {
+            "label": "LanPaint (10 steps)",
+            "value": "4"
+          },
+          {
+            "label": "LanPaint (15 steps)",
+            "value": "5"
+          }
+        ],
+        "default": 0,
+        "label": "Inpainting Method"
+      },
+      "prompt_enhancer": {
+        "choices": [
+          {
+            "label": "A New Image Description using existing Text Prompt",
+            "value": "T"
+          },
+          {
+            "label": "An Image Edit using existing Text Prompt and Ref. Images / Control Image",
+            "value": "TI"
+          },
+          {
+            "label": "An Editing Instruction using existing Text Prompt",
+            "value": "T1"
+          },
+          {
+            "label": "A New Composition using existing Text Prompt and Ref. Images / Control Image",
+            "value": "TI1"
+          }
+        ],
+        "default": ""
+      },
+      "sample_solver": {
+        "choices": [
+          {
+            "label": "FlowMatch Euler",
+            "value": "default"
+          },
+          {
+            "label": "Viggle Turbo",
+            "value": "viggle_v02"
+          },
+          {
+            "label": "Pruna",
+            "value": "pruna"
+          }
+        ]
+      },
+      "video_prompt_type": {
+        "custom_video_selection": null,
+        "forced": "",
+        "guide_custom_choices": null,
+        "guide_preprocessing": {
+          "choices": [
+            {
+              "label": "Control Image",
+              "value": ""
+            },
+            {
+              "label": "PV",
+              "value": "PV"
+            },
+            {
+              "label": "DV",
+              "value": "DV"
+            },
+            {
+              "label": "SV",
+              "value": "SV"
+            },
+            {
+              "label": "CV",
+              "value": "CV"
+            },
+            {
+              "label": "Control Image",
+              "value": "V"
+            }
+          ]
+        },
+        "image_ref_choices": {
+          "choices": [
+            {
+              "label": "None",
+              "value": ""
+            },
+            {
+              "label": "First Image Is the Main Subject or Landscape",
+              "value": "KI"
+            },
+            {
+              "label": "Reference Images Are People or Objects",
+              "value": "I"
+            }
+          ],
+          "letters_filter": "KI"
+        },
+        "mask_preprocessing": {
+          "choices": [
+            {
+              "label": "None",
+              "value": ""
+            },
+            {
+              "label": "A",
+              "value": "A"
+            }
+          ],
+          "visible": true
+        }
+      }
+    },
+    "specialities": [
+      {
+        "aliases": [
+          "text writing",
+          "lettering"
+        ],
+        "description": "Moderate text-rendering quality, best with short text. Spelling and layout require proofreading; not recommended for dense infographics.",
+        "name": "text rendering"
+      }
+    ]
+  }
+]

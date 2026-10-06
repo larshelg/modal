@@ -1,0 +1,36 @@
+{
+  "success": true,
+  "job_id": "7e3560c0-45e1-4983-bd72-6a671f702a75",
+  "worker": "WanGPVideoWorker",
+  "continuation": false,
+  "image_job_id": "29e5cdb4-ca02-41d0-8a33-474aaa43d45a",
+  "image_worker": "WanGPKreaWorker",
+  "references": [
+    {
+      "label": "<Picture 1>",
+      "kind": "image",
+      "source": "native",
+      "image_refs_index": 0,
+      "uri": "s3://bucket-rlnfehwax8alyao51e/runninghub/wangp/29e5cdb4-ca02-41d0-8a33-474aaa43d45a/000-2026-10-03-19h08m06s_seed73_Photorealistic architectural photograph of an empty Mediterranean courtyard in warm afternoon sunlig.jpg",
+      "sha256": "8de2e9e0560f44783b44cd5f3e24fd3cc13a55f2c33a26f39a37dd36bf294eca"
+    },
+    {
+      "label": "<Picture 2>",
+      "kind": "image",
+      "source": "refmod",
+      "mod": "rh2089464102377304066_refmod_1791046483417_retry1",
+      "row": 0,
+      "strength": 1.0,
+      "copies": 1,
+      "copy": 0,
+      "frame": 0
+    }
+  ],
+  "video": {
+    "width": 832,
+    "height": 480,
+    "r_frame_rate": "24/1",
+    "nb_read_frames": "124"
+  },
+  "output_sha256": "b79da408612f15b450712cfb4699bce5206ae3e961be53ac90279b9cf171afb7"
+}

@@ -1,0 +1,39 @@
+{
+  "id": "29e5cdb4-ca02-41d0-8a33-474aaa43d45a",
+  "call_id": "fc-01M41JE5HJ0H27501SY6P1C7Y5",
+  "status": "succeeded",
+  "kind": "image",
+  "model": "krea2_turbo",
+  "worker": "WanGPKreaWorker",
+  "worker_app": "wangpt-krea-modal-app",
+  "created_at": "2026-10-03T19:04:14.999918+00:00",
+  "updated_at": "2026-10-03T19:08:07.641936+00:00",
+  "started_at": "2026-10-03T19:07:56.427934+00:00",
+  "progress": {
+    "phase": "inference",
+    "status": "Saving File 2026-10-03-1...rtyard in warm afternoon sunlig.jpg",
+    "progress": 15,
+    "current_step": null,
+    "total_steps": null
+  },
+  "result": {
+    "success": true,
+    "outputs": [
+      {
+        "storage": "s3",
+        "bucket": "bucket-rlnfehwax8alyao51e",
+        "key": "runninghub/wangp/29e5cdb4-ca02-41d0-8a33-474aaa43d45a/000-2026-10-03-19h08m06s_seed73_Photorealistic architectural photograph of an empty Mediterranean courtyard in warm afternoon sunlig.jpg",
+        "uri": "s3://bucket-rlnfehwax8alyao51e/runninghub/wangp/29e5cdb4-ca02-41d0-8a33-474aaa43d45a/000-2026-10-03-19h08m06s_seed73_Photorealistic architectural photograph of an empty Mediterranean courtyard in warm afternoon sunlig.jpg",
+        "filename": "2026-10-03-19h08m06s_seed73_Photorealistic architectural photograph of an empty Mediterranean courtyard in warm afternoon sunlig.jpg",
+        "size_bytes": 169392,
+        "media_type": "image/jpeg",
+        "sha256": "8de2e9e0560f44783b44cd5f3e24fd3cc13a55f2c33a26f39a37dd36bf294eca"
+      }
+    ],
+    "total_tasks": 1,
+    "successful_tasks": 1,
+    "failed_tasks": 0,
+    "errors": []
+  },
+  "completed_at": "2026-10-03T19:08:07.641926+00:00"
+}
