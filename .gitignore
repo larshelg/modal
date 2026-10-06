@@ -46,3 +46,17 @@ loras/
 Thumbs.db
 *.swp
 *~
+
+*.jpg
+*.jpeg
+*.png
+*.webp
+*.gif
+*.bmp
+*.tiff
+*.ico
+*.svg
+*.webp
+*.gif
+*.bmp
+*.mp4   
